@@ -1,0 +1,17 @@
+{
+  "name": "specterjs",
+  "version": "1.0.0",
+  "description": "Browser environment audit and fingerprinting framework",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview --outDir docs",
+    "deploy": "npm run build && gh-pages -d docs",
+    "lint": "eslint src --ext ts"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.3",
+    "vite": "^5.0.10"
+  }
+}
