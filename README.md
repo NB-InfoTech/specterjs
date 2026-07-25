@@ -30,6 +30,8 @@ npm run preview
 
 ## GitHub Pages Deployment
 
+The project is configured as a GitHub Pages project site for a repository named `specterjs`.
+
 ### Automatic (Recommended)
 
 1. Push to `main`/`master` branch
@@ -44,12 +46,26 @@ npm run deploy
 ```
 
 **Configuration required:**
-- Update `REPO_NAME` in `vite.config.ts` to match your repository name
+- `REPO_NAME` in `vite.config.ts` is currently set to `specterjs`
+- If your GitHub repository name is different, update `REPO_NAME` before publishing
 - The `base` path is set to `/${REPO_NAME}/` for GitHub Pages project sites
 
 ### Custom Domain
 
 If using a custom domain, set `base: '/'` in `vite.config.ts` and configure DNS accordingly.
+
+## Current Fixes
+
+- Fixed the shared TypeScript `AuditResult` type so module result data can be typed safely.
+- Registered module runners with the engine after they are attached, so `window.SpecterJS.runAudit()` can execute all modules.
+- Made the dashboard audit method public for the global API.
+- Fixed worker cross-check code so the generated worker script is valid browser JavaScript and handles worker-only API gaps.
+- Added missing WebGL/Web Audio typing and hashing support used by the audit modules.
+- Set Vite's GitHub Pages base path to `/specterjs/`.
+- Added `package-lock.json` support so the GitHub Pages workflow can use reproducible `npm ci` installs.
+- Added `gh-pages` as a dev dependency for the manual deployment script.
+- Upgraded Vite and added explicit `esbuild` support so dependency audit is clean and production builds pass.
+- Removed the stale lint script because no ESLint configuration or dependency is present.
 
 ## Architecture
 

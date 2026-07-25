@@ -1,9 +1,9 @@
-export interface AuditResult {
+export interface AuditResult<TData = Record<string, unknown>> {
   module: string;
   timestamp: number;
   duration: number;
   success: boolean;
-  data: Record<string, unknown>;
+  data: TData;
   anomalies: Anomaly[];
   error?: string;
 }
@@ -161,6 +161,8 @@ export interface WebGLAnomaly {
   severity: 'critical' | 'high' | 'medium' | 'low';
 }
 
+export type CanvasWebGLAnomaly = Canvas2DAnomaly | WebGLAnomaly;
+
 export interface WebAudioResult {
   fingerprint: string;
   oscillatorFingerprint: string;
@@ -242,6 +244,33 @@ export interface SpecterConfig {
   canvasTimeout: number;
 }
 
+export interface ModuleProgress {
+  module: string;
+  status: 'pending' | 'running' | 'completed' | 'failed';
+  progress: number;
+  timestamp: number;
+  result?: AuditResult;
+}
+
+export interface SpecterAuditReport {
+  timestamp: number;
+  duration: number;
+  config: SpecterConfig;
+  results: Record<string, AuditResult>;
+  trustScore: TrustScore;
+  summary: AuditSummary;
+}
+
+export interface AuditSummary {
+  modulesRun: number;
+  modulesSuccessful: number;
+  modulesFailed: number;
+  totalAnomalies: number;
+  criticalAnomalies: number;
+  highAnomalies: number;
+  trustScore: number;
+}
+
 export const DEFAULT_CONFIG: SpecterConfig = {
   modules: {
     prototypeIntegrity: true,
@@ -270,5 +299,3 @@ export interface ModuleRunner<T> {
   run(config: SpecterConfig): Promise<AuditResult<T>>;
   validate(data: T): Anomaly[];
 }
-
-export type AuditResult<T> = Omit<AuditResult, 'data'> & { data: T };

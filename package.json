@@ -7,11 +7,12 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview --outDir docs",
-    "deploy": "npm run build && gh-pages -d docs",
-    "lint": "eslint src --ext ts"
+    "deploy": "npm run build && gh-pages -d docs"
   },
   "devDependencies": {
+    "esbuild": "^0.28.1",
+    "gh-pages": "^6.3.0",
     "typescript": "^5.3.3",
-    "vite": "^5.0.10"
+    "vite": "^8.1.5"
   }
 }

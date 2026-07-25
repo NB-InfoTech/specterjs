@@ -1,10 +1,12 @@
 import type {
   AuditResult,
   Anomaly,
+  AuditSummary,
+  ModuleProgress,
   TrustScore,
   SpecterConfig,
-  DEFAULT_CONFIG,
   ModuleRunner,
+  SpecterAuditReport,
   PrototypeIntegrityResult,
   WorkerCrossCheckResult,
   CanvasWebGLResult,
@@ -12,33 +14,6 @@ import type {
   NetworkProbingResult
 } from './types.js';
 import { computeTrustScore, DEFAULT_CONFIG as DEFAULT_CONFIG_IMPORT } from './TrustScore.js';
-
-export interface ModuleProgress {
-  module: string;
-  status: 'pending' | 'running' | 'completed' | 'failed';
-  progress: number;
-  timestamp: number;
-  result?: AuditResult<any>;
-}
-
-export interface SpecterAuditReport {
-  timestamp: number;
-  duration: number;
-  config: SpecterConfig;
-  results: Record<string, AuditResult<any>>;
-  trustScore: TrustScore;
-  summary: AuditSummary;
-}
-
-export interface AuditSummary {
-  modulesRun: number;
-  modulesSuccessful: number;
-  modulesFailed: number;
-  totalAnomalies: number;
-  criticalAnomalies: number;
-  highAnomalies: number;
-  trustScore: number;
-}
 
 export class SpecterEngine {
   private config: SpecterConfig;
@@ -59,11 +34,17 @@ export class SpecterEngine {
   }
   
   private registerDefaultRunners(): void {
-    this.moduleRunners.set('prototypeIntegrity', this.prototypeIntegrityRunner);
-    this.moduleRunners.set('workerCrossCheck', this.workerCrossCheckRunner);
-    this.moduleRunners.set('canvasWebGL', this.canvasWebGLRunner);
-    this.moduleRunners.set('webAudio', this.webAudioRunner);
-    this.moduleRunners.set('networkProbing', this.networkProbingRunner);
+    const runners = [
+      this.prototypeIntegrityRunner,
+      this.workerCrossCheckRunner,
+      this.canvasWebGLRunner,
+      this.webAudioRunner,
+      this.networkProbingRunner
+    ].filter(Boolean);
+
+    for (const runner of runners) {
+      this.moduleRunners.set(runner.name, runner);
+    }
   }
   
   registerRunner(name: string, runner: ModuleRunner<any>): void {
@@ -208,7 +189,18 @@ export class SpecterEngine {
   }
   
   updateConfig(config: Partial<SpecterConfig>): void {
-    this.config = { ...this.config, ...config };
+    this.config = {
+      ...this.config,
+      ...config,
+      modules: {
+        ...this.config.modules,
+        ...config.modules
+      },
+      thresholds: {
+        ...this.config.thresholds,
+        ...config.thresholds
+      }
+    };
   }
   
   isRunning(): boolean {

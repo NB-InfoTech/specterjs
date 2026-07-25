@@ -7,32 +7,30 @@ self.onmessage = async function(e) {
       const results = {
         navigator: {
           userAgent: navigator.userAgent,
-          appVersion: navigator.appVersion,
-          platform: navigator.platform,
-          vendor: navigator.vendor,
+          appVersion: navigator.appVersion || null,
+          platform: navigator.platform || null,
+          vendor: navigator.vendor || null,
           language: navigator.language,
           languages: navigator.languages,
           hardwareConcurrency: navigator.hardwareConcurrency,
-          deviceMemory: (navigator as any).deviceMemory,
+          deviceMemory: navigator.deviceMemory,
           maxTouchPoints: navigator.maxTouchPoints,
-          cookieEnabled: navigator.cookieEnabled,
+          cookieEnabled: typeof navigator.cookieEnabled === 'boolean' ? navigator.cookieEnabled : null,
           onLine: navigator.onLine,
           doNotTrack: navigator.doNotTrack,
           connection: navigator.connection ? {
-            effectiveType: (navigator.connection as any).effectiveType,
-            downlink: (navigator.connection as any).downlink,
-            rtt: (navigator.connection as any).rtt,
-            type: (navigator.connection as any).type
+            effectiveType: navigator.connection.effectiveType,
+            downlink: navigator.connection.downlink,
+            rtt: navigator.connection.rtt,
+            type: navigator.connection.type
           } : null,
           userActivation: navigator.userActivation ? {
             isActive: navigator.userActivation.isActive,
             hasBeenActive: navigator.userActivation.hasBeenActive
           } : null,
-          scheduling: navigator.scheduling ? {
-            isInputPending: navigator.scheduling.isInputPending.bind(navigator.scheduling)
-          } : null
+          scheduling: navigator.scheduling ? { available: true } : null
         },
-        screen: {
+        screen: typeof screen !== 'undefined' ? {
           width: screen.width,
           height: screen.height,
           availWidth: screen.availWidth,
@@ -43,11 +41,11 @@ self.onmessage = async function(e) {
             type: screen.orientation.type,
             angle: screen.orientation.angle
           } : null,
-          deviceXDPI: (screen as any).deviceXDPI,
-          deviceYDPI: (screen as any).deviceYDPI,
-          logicalXDPI: (screen as any).logicalXDPI,
-          logicalYDPI: (screen as any).logicalYDPI
-        },
+          deviceXDPI: screen.deviceXDPI,
+          deviceYDPI: screen.deviceYDPI,
+          logicalXDPI: screen.logicalXDPI,
+          logicalYDPI: screen.logicalYDPI
+        } : null,
         timezone: {
           offset: new Date().getTimezoneOffset(),
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone
@@ -58,10 +56,10 @@ self.onmessage = async function(e) {
             navigationStart: performance.timing.navigationStart,
             loadEventEnd: performance.timing.loadEventEnd
           } : null,
-          memory: (performance as any).memory ? {
-            usedJSHeapSize: (performance as any).memory.usedJSHeapSize,
-            totalJSHeapSize: (performance as any).memory.totalJSHeapSize,
-            jsHeapSizeLimit: (performance as any).memory.jsHeapSizeLimit
+          memory: performance.memory ? {
+            usedJSHeapSize: performance.memory.usedJSHeapSize,
+            totalJSHeapSize: performance.memory.totalJSHeapSize,
+            jsHeapSizeLimit: performance.memory.jsHeapSizeLimit
           } : null
         },
         crypto: {
@@ -230,6 +228,27 @@ function sendWorkerMessage(worker: Worker, message: WorkerMessage): Promise<Work
 }
 
 async function collectWindowData(): Promise<Record<string, unknown>> {
+  const extendedNavigator = navigator as Navigator & {
+    connection?: {
+      effectiveType?: string;
+      downlink?: number;
+      rtt?: number;
+      type?: string;
+    };
+    scheduling?: unknown;
+  };
+  const extendedPerformance = performance as Performance & {
+    memory?: {
+      usedJSHeapSize: number;
+      totalJSHeapSize: number;
+      jsHeapSizeLimit: number;
+    };
+    timing?: {
+      navigationStart: number;
+      loadEventEnd: number;
+    };
+  };
+
   return {
     navigator: {
       userAgent: navigator.userAgent,
@@ -244,17 +263,17 @@ async function collectWindowData(): Promise<Record<string, unknown>> {
       cookieEnabled: navigator.cookieEnabled,
       onLine: navigator.onLine,
       doNotTrack: navigator.doNotTrack,
-      connection: navigator.connection ? {
-        effectiveType: (navigator.connection as any).effectiveType,
-        downlink: (navigator.connection as any).downlink,
-        rtt: (navigator.connection as any).rtt,
-        type: (navigator.connection as any).type
+      connection: extendedNavigator.connection ? {
+        effectiveType: extendedNavigator.connection.effectiveType,
+        downlink: extendedNavigator.connection.downlink,
+        rtt: extendedNavigator.connection.rtt,
+        type: extendedNavigator.connection.type
       } : null,
       userActivation: navigator.userActivation ? {
         isActive: navigator.userActivation.isActive,
         hasBeenActive: navigator.userActivation.hasBeenActive
       } : null,
-      scheduling: navigator.scheduling ? {} : null
+      scheduling: extendedNavigator.scheduling ? {} : null
     },
     screen: {
       width: screen.width,
@@ -278,14 +297,14 @@ async function collectWindowData(): Promise<Record<string, unknown>> {
     },
     performance: {
       now: performance.now(),
-      timing: performance.timing ? {
-        navigationStart: performance.timing.navigationStart,
-        loadEventEnd: performance.timing.loadEventEnd
+      timing: extendedPerformance.timing ? {
+        navigationStart: extendedPerformance.timing.navigationStart,
+        loadEventEnd: extendedPerformance.timing.loadEventEnd
       } : null,
-      memory: (performance as any).memory ? {
-        usedJSHeapSize: (performance as any).memory.usedJSHeapSize,
-        totalJSHeapSize: (performance as any).memory.totalJSHeapSize,
-        jsHeapSizeLimit: (performance as any).memory.jsHeapSizeLimit
+      memory: extendedPerformance.memory ? {
+        usedJSHeapSize: extendedPerformance.memory.usedJSHeapSize,
+        totalJSHeapSize: extendedPerformance.memory.totalJSHeapSize,
+        jsHeapSizeLimit: extendedPerformance.memory.jsHeapSizeLimit
       } : null
     },
     crypto: {
@@ -336,6 +355,21 @@ function compareValues(path: string, windowValue: unknown, workerValue: unknown)
   }
   
   return { match: false, discrepancy: `Value mismatch: window=${JSON.stringify(windowValue)}, worker=${JSON.stringify(workerValue)}` };
+}
+
+function compareCommonObjectValues(
+  path: string,
+  windowValue: Record<string, unknown>,
+  workerValue: Record<string, unknown>
+): { match: boolean; discrepancy?: string } {
+  const commonKeys = Object.keys(windowValue).filter(key => key in workerValue);
+
+  for (const key of commonKeys) {
+    const subResult = compareValues(`${path}.${key}`, windowValue[key], workerValue[key]);
+    if (!subResult.match) return subResult;
+  }
+
+  return { match: true };
 }
 
 function compareTiming(windowTiming: number, workerTiming: number): { delta: number; anomaly: boolean } {
@@ -401,10 +435,14 @@ export async function runWorkerCrossCheck(config: SpecterConfig): Promise<AuditR
     
     const workerData = workerResponse.payload as Record<string, unknown>;
     
-    const navigatorComparison = compareValues('navigator', windowData.navigator, workerData.navigator);
-    const screenComparison = compareValues('screen', windowData.screen, workerData.screen);
-    const hardwareConcurrencyComparison = compareValues('hardwareConcurrency', windowData.navigator.hardwareConcurrency, workerData.navigator.hardwareConcurrency);
-    const languageComparison = compareValues('language', windowData.navigator.language, workerData.navigator.language);
+    const windowNavigator = windowData.navigator as Record<string, unknown>;
+    const workerNavigator = workerData.navigator as Record<string, unknown>;
+    const navigatorComparison = compareCommonObjectValues('navigator', windowNavigator, workerNavigator);
+    const screenComparison = workerData.screen === null
+      ? { match: true, discrepancy: 'screen is not exposed in dedicated workers' }
+      : compareValues('screen', windowData.screen, workerData.screen);
+    const hardwareConcurrencyComparison = compareValues('hardwareConcurrency', windowNavigator.hardwareConcurrency, workerNavigator.hardwareConcurrency);
+    const languageComparison = compareValues('language', windowNavigator.language, workerNavigator.language);
     const timezoneComparison = compareValues('timezone', windowData.timezone, workerData.timezone);
     
     const windowTimingStart = performance.now();
@@ -426,8 +464,8 @@ export async function runWorkerCrossCheck(config: SpecterConfig): Promise<AuditR
     const checks = [
       { name: 'navigator', window: windowData.navigator, worker: workerData.navigator, comparison: navigatorComparison },
       { name: 'screen', window: windowData.screen, worker: workerData.screen, comparison: screenComparison },
-      { name: 'hardwareConcurrency', window: windowData.navigator.hardwareConcurrency, worker: workerData.navigator.hardwareConcurrency, comparison: hardwareConcurrencyComparison },
-      { name: 'language', window: windowData.navigator.language, worker: workerData.navigator.language, comparison: languageComparison },
+      { name: 'hardwareConcurrency', window: windowNavigator.hardwareConcurrency, worker: workerNavigator.hardwareConcurrency, comparison: hardwareConcurrencyComparison },
+      { name: 'language', window: windowNavigator.language, worker: workerNavigator.language, comparison: languageComparison },
       { name: 'timezone', window: windowData.timezone, worker: workerData.timezone, comparison: timezoneComparison }
     ];
     
@@ -497,14 +535,14 @@ export async function runWorkerCrossCheck(config: SpecterConfig): Promise<AuditR
         discrepancy: screenComparison.discrepancy
       },
       hardwareConcurrency: {
-        windowValue: windowData.navigator.hardwareConcurrency,
-        workerValue: workerData.navigator.hardwareConcurrency,
+        windowValue: windowNavigator.hardwareConcurrency,
+        workerValue: workerNavigator.hardwareConcurrency,
         match: hardwareConcurrencyComparison.match,
         discrepancy: hardwareConcurrencyComparison.discrepancy
       },
       language: {
-        windowValue: windowData.navigator.language,
-        workerValue: workerData.navigator.language,
+        windowValue: windowNavigator.language,
+        workerValue: workerNavigator.language,
         match: languageComparison.match,
         discrepancy: languageComparison.discrepancy
       },

@@ -7,8 +7,7 @@ import type {
   ProxyDetectionResult,
   FunctionIntegrityResult,
   SpecterConfig,
-  ModuleRunner,
-  DEFAULT_CONFIG
+  ModuleRunner
 } from '../core/types.js';
 
 const EXPECTED_NAVIGATOR_PROTOTYPE_PROPS = [
@@ -90,6 +89,10 @@ const KNOWN_PROXY_TRAPS = [
 ];
 
 function isProxy(target: unknown): { isProxy: boolean; traps?: string[] } {
+  if ((typeof target !== 'object' && typeof target !== 'function') || target === null) {
+    return { isProxy: false };
+  }
+
   try {
     const proxy = new Proxy(target, {});
     const traps: string[] = [];
@@ -250,14 +253,9 @@ function detectProxies(targets: Record<string, unknown>): ProxyDetectionResult[]
               set: () => true,
               has: () => true
             };
-            const testProxy = new Proxy(target as object, handler);
             for (const trap of KNOWN_PROXY_TRAPS) {
-              try {
-                Reflect[traps as keyof typeof Reflect];
-                traps = traps || [];
-                traps.push(trap);
-              } catch {
-              }
+              traps = traps || [];
+              traps.push(trap);
             }
           } catch {
           }
@@ -300,8 +298,9 @@ function checkFunctionIntegrity(): FunctionIntegrityResult[] {
     if (typeof fn === 'function') {
       const actualSource = getFunctionSource(fn as Function);
       const isNative = isNativeFunction(fn as Function);
+      const expectedBody = expectedSource.split('{')[1]?.split('}')[0] || '';
       const isTampered = !actualSource.includes('[native code]') || 
-                         (expectedSource && !actualSource.includes(expectedSource.split('{')[1]?.split('}')[0] || ''));
+                         (expectedBody !== '' && !actualSource.includes(expectedBody));
       
       const anomalies: string[] = [];
       if (!isNative) anomalies.push('Function is not native');

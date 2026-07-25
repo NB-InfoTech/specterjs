@@ -91,7 +91,7 @@ export class Dashboard {
     clearBtn?.addEventListener('click', () => this.clearReport());
   }
   
-  private async runAudit(): Promise<void> {
+  async runAudit(): Promise<void> {
     if (this.isRunning) return;
     
     this.startTime = Date.now();

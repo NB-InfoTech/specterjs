@@ -1,7 +1,7 @@
 import { defineConfig } from 'vite'
 
-// GitHub Pages repository name - change this to your repo name
-const REPO_NAME = 'phantom-audit'
+// GitHub Pages project site path for https://<user>.github.io/specterjs/
+const REPO_NAME = 'specterjs'
 
 export default defineConfig({
   root: '.',

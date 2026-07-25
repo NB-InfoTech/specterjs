@@ -3,11 +3,9 @@ import type {
   Anomaly,
   NetworkProbingResult,
   WebRTCResult,
-  RTCIceCandidate,
   WebRTCAnomaly,
   TimingResult,
   TimingAnomaly,
-  NetworkAnomaly,
   SpecterConfig,
   ModuleRunner
 } from '../core/types.js';
@@ -64,7 +62,7 @@ function analyzeCandidates(candidates: RTCIceCandidate[]): {
   const anomalies: WebRTCAnomaly[] = [];
   
   for (const candidate of candidates) {
-    const type = candidate.type;
+    const type = candidate.type ?? 'unknown';
     candidateTypes[type] = (candidateTypes[type] || 0) + 1;
     
     const ipMatch = candidate.candidate.match(/(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})/);

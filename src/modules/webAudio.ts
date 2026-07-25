@@ -27,6 +27,15 @@ function hashBuffer(buffer: ArrayBuffer | Uint8Array): string {
   return Math.abs(hash).toString(16).padStart(8, '0');
 }
 
+function hashString(str: string): string {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = ((hash << 5) - hash) + str.charCodeAt(i);
+    hash |= 0;
+  }
+  return Math.abs(hash).toString(16).padStart(8, '0');
+}
+
 function hashFloat32Array(arr: Float32Array): string {
   let hash = 0;
   for (let i = 0; i < arr.length; i++) {
@@ -263,7 +272,7 @@ export async function runWebAudio(config: SpecterConfig): Promise<AuditResult<We
         description: `Web Audio anomaly: ${anomaly.type}`,
         expected: anomaly.expected,
         actual: anomaly.actual,
-        evidence: anomaly,
+        evidence: { ...anomaly },
         confidence: anomaly.severity === 'critical' ? 0.95 : anomaly.severity === 'high' ? 0.85 : 0.7,
         timestamp: Date.now()
       });

@@ -3,7 +3,9 @@ import type {
   Anomaly,
   CanvasWebGLResult,
   Canvas2DResult,
+  Canvas2DAnomaly,
   WebGLResult,
+  WebGLAnomaly,
   TextMetricsResult,
   SpecterConfig,
   ModuleRunner
@@ -14,8 +16,10 @@ const CANVAS_HEIGHT = 256;
 const EMOJIS = ['🎨', '🖼️', '🎭', '🎪', '🎯', '🎲', '🃏', '🎴', '🀄', '🎰'];
 const FONTS = ['12px Arial', '12px sans-serif', '12px monospace', '12px system-ui'];
 
-function hashBuffer(buffer: ArrayBuffer | Uint8Array): string {
-  const data = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+function hashBuffer(buffer: ArrayBuffer | ArrayBufferView): string {
+  const data = buffer instanceof ArrayBuffer
+    ? new Uint8Array(buffer)
+    : new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
   let hash = 0;
   for (let i = 0; i < data.length; i++) {
     hash = ((hash << 5) - hash) + data[i];
@@ -282,8 +286,7 @@ function getWebGLResult(version: 1 | 2): WebGLResult {
       'MAX_FRAGMENT_INPUT_COMPONENTS': (gl as WebGL2RenderingContext).MAX_FRAGMENT_INPUT_COMPONENTS,
       'MIN_PROGRAM_TEXEL_OFFSET': (gl as WebGL2RenderingContext).MIN_PROGRAM_TEXEL_OFFSET,
       'MAX_PROGRAM_TEXEL_OFFSET': (gl as WebGL2RenderingContext).MAX_PROGRAM_TEXEL_OFFSET,
-      'MAX_TRANSFORM_FEEDBACK_SEPARATE_COMPONENTS': (gl as WebGL2RenderingContext).MAX_TRANSFORM_FEEDBACK_SEPARATE_COMPONENTS,
-      'MAX_TRANSFORM_FEEDBACK_BUFFERS': (gl as WebGL2RenderingContext).MAX_TRANSFORM_FEEDBACK_BUFFERS
+      'MAX_TRANSFORM_FEEDBACK_SEPARATE_COMPONENTS': (gl as WebGL2RenderingContext).MAX_TRANSFORM_FEEDBACK_SEPARATE_COMPONENTS
     });
   }
   
@@ -314,14 +317,17 @@ function getWebGLResult(version: 1 | 2): WebGLResult {
   
   try {
     const vertShader = gl.createShader(gl.VERTEX_SHADER);
+    if (!vertShader) throw new Error('Unable to create vertex shader');
     gl.shaderSource(vertShader, vertShaderSrc);
     gl.compileShader(vertShader);
     
     const fragShader = gl.createShader(gl.FRAGMENT_SHADER);
+    if (!fragShader) throw new Error('Unable to create fragment shader');
     gl.shaderSource(fragShader, fragShaderSrc);
     gl.compileShader(fragShader);
     
     const program = gl.createProgram();
+    if (!program) throw new Error('Unable to create WebGL program');
     gl.attachShader(program, vertShader);
     gl.attachShader(program, fragShader);
     gl.linkProgram(program);
