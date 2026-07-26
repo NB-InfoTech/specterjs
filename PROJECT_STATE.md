@@ -19,6 +19,8 @@ SpecterJS is a pure TypeScript browser environment audit and fingerprinting fram
 - [x] **WebAudio Fingerprint Module** — Runs offline audio context rendering (oscillator, compressor, complex signal) to generate audio fingerprint and detect audio stack tampering
 - [x] **Network Probing Module** — Gathers WebRTC ICE candidates for local IP leak detection, public IP exposure, and timing precision analysis with worker timing comparison
 - [x] **Anomaly Legend Panel** — Togglable legend explaining severity levels (Critical/High/Medium/Low/Info) and anomaly categories (prototype tampering, execution context lie, hardware spoofing, network anomaly, timing anomaly, entropy anomaly)
+- [x] **Per-anomaly impact explanations** — Each expanded anomaly displays a "Why This Matters" banner explaining the security significance of the category, with severity callouts for Critical/High items
+- [x] **Interactive module card filtering** — Clicking a module card filters the anomaly visualizer to display all that module's observations (critical, high, etc.)
 
 # Active Task
 
