@@ -1,55 +1,47 @@
-import type { SpecterConfig } from './core/types.js';
-import { SpecterEngine, createEngine, DEFAULT_CONFIG as ENGINE_DEFAULT_CONFIG } from './core/Engine.js';
-import { prototypeIntegrityRunner } from './modules/prototypeIntegrity.js';
-import { workerCrossCheckRunner } from './modules/workerCrossCheck.js';
-import { canvasWebGLRunner } from './modules/canvasWebGL.js';
-import { webAudioRunner } from './modules/webAudio.js';
-import { networkProbingRunner } from './modules/networkProbing.js';
-import { Dashboard } from './ui/Dashboard.js';
-import './style.css';
+/* ------------------------------------------------------------------ */
+/*  SpecterJS – Main Entry Point                                      */
+/*  Bootstraps the audit engine & renders the Cyber-Lab dashboard.    */
+/* ------------------------------------------------------------------ */
 
-class SpecterJSApp {
-  private engine: SpecterEngine;
-  private dashboard: Dashboard;
-  
-  constructor() {
-    this.engine = createEngine(ENGINE_DEFAULT_CONFIG);
-    
-    this.engine.prototypeIntegrityRunner = prototypeIntegrityRunner;
-    this.engine.workerCrossCheckRunner = workerCrossCheckRunner;
-    this.engine.canvasWebGLRunner = canvasWebGLRunner;
-    this.engine.webAudioRunner = webAudioRunner;
-    this.engine.networkProbingRunner = networkProbingRunner;
-    this.engine.registerRunner('prototypeIntegrity', prototypeIntegrityRunner);
-    this.engine.registerRunner('workerCrossCheck', workerCrossCheckRunner);
-    this.engine.registerRunner('canvasWebGL', canvasWebGLRunner);
-    this.engine.registerRunner('webAudio', webAudioRunner);
-    this.engine.registerRunner('networkProbing', networkProbingRunner);
-    
-    const appContainer = document.getElementById('app')!;
-    this.dashboard = new Dashboard(appContainer, this.engine);
-    
-    this.registerGlobalAPI();
+import { runAudit } from "./core/Engine.js";
+import { render } from "./ui/Dashboard.js";
+
+async function bootstrap(): Promise<void> {
+  const root = document.getElementById("app");
+  if (!root) {
+    console.warn("[SpecterJS] Mount point #app not found.");
+    return;
   }
-  
-  private registerGlobalAPI(): void {
-    (window as any).SpecterJS = {
-      engine: this.engine,
-      dashboard: this.dashboard,
-      runAudit: () => this.dashboard.runAudit(),
-      getReport: () => this.engine.getResults(),
-      config: this.engine.getConfig(),
-      setConfig: (config: Partial<SpecterConfig>) => this.engine.updateConfig(config)
-    };
-    
-    console.log('%c👻 SpecterJS loaded', 'color: #00ff88; font-size: 16px; font-weight: bold;');
-    console.log('%cAccess via window.SpecterJS', 'color: #888;');
-    console.log('%cModules: prototypeIntegrity, workerCrossCheck, canvasWebGL, webAudio, networkProbing', 'color: #666;');
+
+  root.innerHTML = `
+    <div class="loading-screen">
+      <div class="loader"></div>
+      <p>Scanning browser integrity&hellip;</p>
+    </div>
+  `;
+
+  try {
+    const report = await runAudit();
+    render(report, root);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    root.innerHTML = `
+      <div class="error-screen">
+        <h2>Audit Error</h2>
+        <pre>${escapeHtml(msg)}</pre>
+      </div>
+    `;
   }
 }
 
-document.addEventListener('DOMContentLoaded', () => {
-  new SpecterJSApp();
-});
+function escapeHtml(text: string): string {
+  const div = document.createElement("div");
+  div.textContent = text;
+  return div.innerHTML;
+}
 
-export { SpecterJSApp };
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", bootstrap);
+} else {
+  bootstrap();
+}

@@ -1,481 +1,269 @@
-import type { TrustScore, AuditResult, SpecterConfig, SpecterAuditReport, AuditSummary } from '../core/types.js';
-import { AnomalyVisualizer } from './AnomalyVisualizer.js';
+import type { AuditReport, ProbeResult } from "../types/index.js";
+import { renderAnomalyList, renderAnomalyCountBadge } from "./AnomalyVisualizer.js";
 
-export class Dashboard {
-  private container: HTMLElement;
-  private engine: any;
-  private anomalyVisualizer: AnomalyVisualizer;
-  private isRunning = false;
-  private currentReport: SpecterAuditReport | null = null;
-  private selectedModule: string | null = null;
-  
-  constructor(container: HTMLElement, engine: any) {
-    this.container = container;
-    this.engine = engine;
-    
-    this.render();
-    this.anomalyVisualizer = new AnomalyVisualizer(
-      this.container.querySelector('.anomaly-visualizer-container') as HTMLElement
-    );
-    
-    this.attachEventListeners();
-    this.startAutoRefresh();
+/* ------------------------------------------------------------------ */
+/*  Module display helpers                                            */
+/* ------------------------------------------------------------------ */
+interface ModuleGroup {
+  displayName: string;
+  icon: string;
+  probes: ProbeResult[];
+}
+
+function groupProbes(probes: ProbeResult[]): ModuleGroup[] {
+  const groups: Record<string, ModuleGroup> = {
+    prototypeIntegrity: { displayName: "Prototype Integrity", icon: "\uD83D\uDD11", probes: [] },
+    workerCrossCheck: { displayName: "Worker Cross-Check", icon: "\u2699\uFE0F", probes: [] },
+    canvasWebGL: { displayName: "Canvas &amp; WebGL", icon: "\uD83C\uDFA8", probes: [] },
+    webAudio: { displayName: "Web Audio", icon: "\uD83C\uDFB5", probes: [] },
+    networkProbing: { displayName: "Network Probing", icon: "\uD83C\uDF10", probes: [] },
+    hardeningProbing: { displayName: "Hardening &amp; Extensions", icon: "\uD83D\uDEE1\uFE0F", probes: [] },
+    engine: { displayName: "Engine", icon: "\u26A1", probes: [] },
+  };
+
+  for (const p of probes) {
+    const prefix = (p.id.split(":")[0] ?? "").toLowerCase();
+    const key = findGroupKey(prefix);
+    const group = groups[key];
+    if (group) {
+      group.probes.push(p);
+    } else {
+      /* Fallback: put in engine group */
+      groups.engine!.probes.push(p);
+    }
   }
-  
-  private render(): void {
-    this.container.innerHTML = `
-      <div class="specter-dashboard">
-        <header class="dashboard-header">
-          <div class="header-left">
-            <h1 class="dashboard-title">👻 SpecterJS</h1>
-            <span class="dashboard-subtitle">Browser Environment Audit & Fingerprinting Framework</span>
-          </div>
-          <div class="header-right">
-            <div class="trust-score-display" id="trust-score-display">
-              <div class="score-circle" id="score-circle">
-                <span class="score-value" id="score-value">--</span>
-                <span class="score-label">Trust</span>
-              </div>
-              <div class="score-verdict" id="score-verdict">--</div>
-            </div>
-            <button class="btn btn-primary" id="run-audit-btn">Run Audit</button>
-          </div>
-        </header>
-        
-        <div class="dashboard-progress" id="dashboard-progress" style="display: none;">
-          <div class="progress-bar-container">
-            <div class="progress-bar" id="progress-bar"></div>
-          </div>
-          <div class="progress-status" id="progress-status">Initializing...</div>
-          <div class="module-progress" id="module-progress"></div>
-        </div>
-        
-        <div class="dashboard-content">
-          <div class="dashboard-sidebar">
-            <div class="module-cards" id="module-cards"></div>
-            
-            <div class="config-panel">
-              <h3>Configuration</h3>
-              <div class="config-toggles" id="config-toggles"></div>
-            </div>
-          </div>
-          
-          <div class="dashboard-main">
-            <div class="metrics-grid" id="metrics-grid"></div>
-            
-            <div class="anomaly-visualizer-container" id="anomaly-visualizer-container"></div>
-          </div>
-        </div>
-        
-        <footer class="dashboard-footer">
-          <div class="footer-left">
-            <span class="version">SpecterJS v1.0.0</span>
-            <span class="timestamp" id="report-timestamp">No audit run</span>
-          </div>
-          <div class="footer-right">
-            <button class="btn btn-secondary" id="export-report-btn">Export Report</button>
-            <button class="btn btn-secondary" id="clear-report-btn">Clear</button>
-          </div>
-        </footer>
-      </div>
-    `;
+
+  return Object.entries(groups)
+    .filter(([, g]) => g.probes.length > 0)
+    .map(([, g]) => g);
+}
+
+function findGroupKey(prefix: string): string {
+  switch (prefix) {
+    case "prototype": return "prototypeIntegrity";
+    case "worker": return "workerCrossCheck";
+    case "canvas": return "canvasWebGL";
+    case "audio": return "webAudio";
+    case "network": return "networkProbing";
+    case "hardening": return "hardeningProbing";
+    case "engine": return "engine";
+    default: return "engine";
   }
-  
-  private attachEventListeners(): void {
-    const runBtn = this.container.querySelector('#run-audit-btn') as HTMLButtonElement;
-    runBtn?.addEventListener('click', () => this.runAudit());
-    
-    const exportBtn = this.container.querySelector('#export-report-btn') as HTMLButtonElement;
-    exportBtn?.addEventListener('click', () => this.exportReport());
-    
-    const clearBtn = this.container.querySelector('#clear-report-btn') as HTMLButtonElement;
-    clearBtn?.addEventListener('click', () => this.clearReport());
+}
+
+/* ------------------------------------------------------------------ */
+/*  Probe status icon                                                 */
+/* ------------------------------------------------------------------ */
+function hardeningIcon(code: string): string {
+  if (code.includes("adblock")) return "\uD83D\uDEE1\uFE0F";
+  if (code.includes("canvasNoise")) return "\uD83C\uDFA8";
+  if (code.includes("gpc")) return "\uD83D\uDD12";
+  if (code.includes("dnt")) return "\uD83D\uDEAB";
+  if (code.includes("rfp")) return "\uD83E\uDDEA";
+  return "\uD83D\uDCCC";
+}
+
+function probeIcon(status: string): string {
+  switch (status) {
+    case "success": return "\u2705";
+    case "error": return "\u274C";
+    case "blocked": return "\u26D4";
+    default: return "\u2753";
   }
-  
-  async runAudit(): Promise<void> {
-    if (this.isRunning) return;
-    
-    this.startTime = Date.now();
-    this.isRunning = true;
-    this.showProgress(true);
-    this.updateRunButton(true);
-    
-    const moduleProgressEl = this.container.querySelector('#module-progress') as HTMLElement;
-    const progressBar = this.container.querySelector('#progress-bar') as HTMLElement;
-    const progressStatus = this.container.querySelector('#progress-status') as HTMLElement;
-    
+}
+
+function formatValue(val: unknown): string {
+  if (val === null || val === undefined) return "<span class=\"val-null\">null</span>";
+  if (typeof val === "string") {
+    if (val.length > 80) return `<span class="val-string" title="${escapeHtml(val)}">${escapeHtml(val.slice(0, 80))}&hellip;</span>`;
+    return `<span class="val-string">${escapeHtml(val)}</span>`;
+  }
+  if (typeof val === "number") return `<span class="val-number">${val}</span>`;
+  if (typeof val === "boolean") return `<span class="val-boolean">${val}</span>`;
+  if (Array.isArray(val)) {
+    return `<span class="val-array">[${val.map((v) => formatValue(v)).join(", ")}]</span>`;
+  }
+  if (typeof val === "object") {
     try {
-      const config = this.engine.getConfig();
-      const modules = Object.entries(config.modules)
-        .filter(([, enabled]) => enabled)
-        .map(([name]) => name);
-      
-      let completed = 0;
-      const results: Record<string, AuditResult<any>> = {};
-      const allAnomalies: any[] = [];
-      
-      for (const moduleName of modules) {
-        this.updateModuleProgress(moduleProgressEl, moduleName, 'running', completed / modules.length);
-        progressStatus.textContent = `Running ${moduleName}...`;
-        progressBar.style.width = `${(completed / modules.length) * 100}%`;
-        
-        const runner = this.getModuleRunner(moduleName);
-        if (runner) {
-          const result = await runner.run(config);
-          results[moduleName] = result;
-          allAnomalies.push(...result.anomalies);
-        }
-        
-        completed++;
-        this.updateModuleProgress(moduleProgressEl, moduleName, 'completed', completed / modules.length);
-      }
-      
-      progressBar.style.width = '100%';
-      progressStatus.textContent = 'Calculating trust score...';
-      
-      const trustScore = this.calculateTrustScore(results, allAnomalies);
-      
-      const report: SpecterAuditReport = {
-        timestamp: Date.now(),
-        duration: Date.now() - this.startTime,
-        config,
-        results,
-        trustScore,
-        summary: this.generateSummary(results, allAnomalies, trustScore.overall)
-      };
-      
-      this.currentReport = report;
-      this.renderReport(report);
-      
-    } catch (error) {
-      console.error('Audit failed:', error);
-      progressStatus.textContent = `Error: ${error instanceof Error ? error.message : String(error)}`;
-      progressStatus.classList.add('error');
-    } finally {
-      this.isRunning = false;
-      this.showProgress(false);
-      this.updateRunButton(false);
+      return `<span class="val-object">${escapeHtml(JSON.stringify(val, null, 1).slice(0, 200))}</span>`;
+    } catch {
+      return `<span class="val-object">[Object]</span>`;
     }
   }
-  
-  private startTime = Date.now();
-  
-  private getModuleRunner(moduleName: string): any {
-    const runners: Record<string, any> = {
-      prototypeIntegrity: this.engine.prototypeIntegrityRunner,
-      workerCrossCheck: this.engine.workerCrossCheckRunner,
-      canvasWebGL: this.engine.canvasWebGLRunner,
-      webAudio: this.engine.webAudioRunner,
-      networkProbing: this.engine.networkProbingRunner
-    };
-    return runners[moduleName];
-  }
-  
-  private showProgress(show: boolean): void {
-    const progressEl = this.container.querySelector('#dashboard-progress') as HTMLElement;
-    if (progressEl) {
-      progressEl.style.display = show ? 'block' : 'none';
-    }
-  }
-  
-  private updateRunButton(running: boolean): void {
-    const btn = this.container.querySelector('#run-audit-btn') as HTMLButtonElement;
-    if (btn) {
-      btn.disabled = running;
-      btn.textContent = running ? 'Running...' : 'Run Audit';
-    }
-  }
-  
-  private updateModuleProgress(container: HTMLElement, moduleName: string, status: 'pending' | 'running' | 'completed' | 'failed', progress: number): void {
-    let el = container.querySelector(`[data-module="${moduleName}"]`);
-    if (!el) {
-      el = document.createElement('div');
-      el.className = 'module-progress-item';
-      el.setAttribute('data-module', moduleName);
-      container.appendChild(el);
-    }
-    
-    const statusIcons: Record<string, string> = {
-      pending: '⏳',
-      running: '🔄',
-      completed: '✅',
-      failed: '❌'
-    };
-    
-    el.innerHTML = `
-      <span class="module-status-icon">${statusIcons[status]}</span>
-      <span class="module-name">${moduleName}</span>
-      <div class="module-mini-progress">
-        <div class="module-mini-bar" style="width: ${progress * 100}%"></div>
-      </div>
-    `;
-  }
-  
-  private calculateTrustScore(results: Record<string, AuditResult<any>>, allAnomalies: any[]): TrustScore {
-    const breakdown = {
-      prototypeIntegrity: 1,
-      executionContext: 1,
-      hardwareEntropy: 1,
-      networkIntegrity: 1,
-      timingIntegrity: 1
-    };
-    
-    for (const [module, result] of Object.entries(results)) {
-      if (!result.success) continue;
-      
-      const anomalies = result.anomalies;
-      let penalty = 0;
-      
-      for (const anomaly of anomalies) {
-        switch (anomaly.severity) {
-          case 'critical': penalty += 0.3; break;
-          case 'high': penalty += 0.2; break;
-          case 'medium': penalty += 0.1; break;
-          case 'low': penalty += 0.05; break;
-          case 'info': penalty += 0.01; break;
-        }
-      }
-      
-      const score = Math.max(0, 1 - penalty);
-      
-      switch (module) {
-        case 'prototypeIntegrity': breakdown.prototypeIntegrity = score; break;
-        case 'workerCrossCheck': breakdown.executionContext = score; break;
-        case 'canvasWebGL': breakdown.hardwareEntropy = score; break;
-        case 'webAudio': breakdown.hardwareEntropy = Math.min(breakdown.hardwareEntropy, score); break;
-        case 'networkProbing': 
-          breakdown.networkIntegrity = score;
-          breakdown.timingIntegrity = score;
-          break;
-      }
-    }
-    
-    const overall = Math.round((
-      breakdown.prototypeIntegrity * 0.25 +
-      breakdown.executionContext * 0.2 +
-      breakdown.hardwareEntropy * 0.25 +
-      breakdown.networkIntegrity * 0.15 +
-      breakdown.timingIntegrity * 0.15
-    ) * 100);
-    
-    let verdict: TrustScore['verdict'] = 'trusted';
-    if (overall < 40) verdict = 'compromised';
-    else if (overall < 70) verdict = 'suspicious';
-    else if (overall < 90) verdict = 'trusted';
-    else verdict = 'trusted';
-    
-    return {
-      overall,
-      breakdown,
-      verdict,
-      anomalies: allAnomalies,
-      timestamp: Date.now()
-    };
-  }
-  
-  private generateSummary(results: Record<string, AuditResult<any>>, anomalies: any[], trustScore: number): AuditSummary {
-    const modulesRun = Object.keys(results).length;
-    const modulesSuccessful = Object.values(results).filter(r => r.success).length;
-    const modulesFailed = modulesRun - modulesSuccessful;
-    const totalAnomalies = anomalies.length;
-    const criticalAnomalies = anomalies.filter(a => a.severity === 'critical').length;
-    const highAnomalies = anomalies.filter(a => a.severity === 'high').length;
-    
-    return {
-      modulesRun,
-      modulesSuccessful,
-      modulesFailed,
-      totalAnomalies,
-      criticalAnomalies,
-      highAnomalies,
-      trustScore
-    };
-  }
-  
-  private renderReport(report: SpecterAuditReport): void {
-    this.renderTrustScore(report.trustScore);
-    this.renderModuleCards(report.results);
-    this.renderMetricsGrid(report.summary);
-    const anomaliesToShow = this.selectedModule && report.trustScore
-      ? report.trustScore.anomalies.filter(a => a.module === this.selectedModule)
-      : report.trustScore.anomalies;
-    this.anomalyVisualizer.setAnomalies(anomaliesToShow);
-    this.renderConfigToggles(report.config);
-    this.updateTimestamp(report.timestamp);
-  }
-  
-  private renderTrustScore(score: TrustScore): void {
-    const circle = this.container.querySelector('#score-circle') as HTMLElement;
-    const valueEl = this.container.querySelector('#score-value') as HTMLElement;
-    const verdictEl = this.container.querySelector('#score-verdict') as HTMLElement;
-    
-    if (circle && valueEl && verdictEl) {
-      valueEl.textContent = `${score.overall}%`;
-      verdictEl.textContent = score.verdict.toUpperCase();
-      
-      circle.className = 'score-circle';
-      circle.classList.add(`verdict-${score.verdict}`);
-      
-      const circumference = 2 * Math.PI * 45;
-      const offset = circumference * (1 - score.overall / 100);
-      circle.style.setProperty('--progress-offset', `${offset}px`);
-    }
-  }
-  
-  private renderModuleCards(results: Record<string, AuditResult<any>>): void {
-    const container = this.container.querySelector('#module-cards') as HTMLElement;
-    if (!container) return;
-    
-    const moduleOrder = ['prototypeIntegrity', 'workerCrossCheck', 'canvasWebGL', 'webAudio', 'networkProbing'];
-    const moduleLabels: Record<string, string> = {
-      prototypeIntegrity: 'Prototype Integrity',
-      workerCrossCheck: 'Worker Cross-Check',
-      canvasWebGL: 'Canvas/WebGL Entropy',
-      webAudio: 'Web Audio Fingerprint',
-      networkProbing: 'Network & Timing'
-    };
-    
-    container.innerHTML = moduleOrder
-      .filter(name => name in results)
-      .map(name => {
-        const result = results[name];
-        const anomalyCount = result.anomalies.length;
-        const criticalCount = result.anomalies.filter(a => a.severity === 'critical').length;
-        const highCount = result.anomalies.filter(a => a.severity === 'high').length;
-        
-        let statusClass = 'success';
-        if (!result.success) statusClass = 'error';
-        else if (criticalCount > 0) statusClass = 'critical';
-        else if (highCount > 0) statusClass = 'warning';
-        
-        const isSelected = this.selectedModule === name;
-        
-        return `
-          <div class="module-card ${statusClass} ${isSelected ? 'selected' : ''}" data-module="${name}" style="cursor: pointer; ${isSelected ? 'border-color: var(--accent-primary); box-shadow: 0 0 10px rgba(0, 212, 170, 0.3);' : ''}" title="Click to inspect all observations/anomalies for this module">
-            <div class="module-card-header">
-              <span class="module-card-name">${moduleLabels[name]} ${isSelected ? ' (Filtered)' : ''}</span>
-              <span class="module-card-status">${result.success ? 'OK' : 'FAILED'}</span>
+  return escapeHtml(String(val));
+}
+
+/* ------------------------------------------------------------------ */
+/*  Module card rendering                                             */
+/* ------------------------------------------------------------------ */
+function renderModuleCards(groups: ModuleGroup[]): string {
+  return groups
+    .map((g) => {
+      const anomalyCount = g.probes.filter((p) => p.status === "error").length;
+      return `
+    <details class="module-card" ${anomalyCount > 0 ? "open" : ""}>
+      <summary class="module-summary">
+        <span class="module-icon">${g.icon}</span>
+        <span class="module-name">${g.displayName}</span>
+        ${renderAnomalyCountBadge(anomalyCount)}
+        <span class="module-probe-count">${g.probes.length} probes</span>
+        <span class="module-toggle">+</span>
+      </summary>
+      <div class="module-body">
+        ${g.probes
+          .map(
+            (p) => `
+          <div class="probe-item ${p.status === "error" ? "probe-error" : ""} ${p.status === "blocked" ? "probe-blocked" : ""}">
+            <div class="probe-header">
+              <span class="probe-icon">${probeIcon(p.status)}</span>
+              <span class="probe-label">${escapeHtml(p.label)}</span>
+              <span class="probe-id">${escapeHtml(p.id)}</span>
+              ${p.durationMs !== undefined ? `<span class="probe-duration">${p.durationMs}ms</span>` : ""}
             </div>
-            <div class="module-card-meta">
-              <span>Duration: ${result.duration.toFixed(1)}ms</span>
-              <span>Anomalies: ${anomalyCount}</span>
-            </div>
-            ${criticalCount > 0 ? `<div class="module-card-critical">${criticalCount} critical</div>` : ''}
-            ${highCount > 0 ? `<div class="module-card-high">${highCount} high</div>` : ''}
+            ${p.value !== null ? `<div class="probe-value">${formatValue(p.value)}</div>` : ""}
+            ${p.message ? `<div class="probe-message">${escapeHtml(p.message)}</div>` : ""}
           </div>
-        `;
-      }).join('');
-    
-    container.querySelectorAll('.module-card').forEach(card => {
-      card.addEventListener('click', () => {
-        const moduleName = (card as HTMLElement).dataset.module;
-        if (this.selectedModule === moduleName) {
-          this.selectedModule = null;
-        } else {
-          this.selectedModule = moduleName || null;
-        }
-        if (this.currentReport) {
-          this.renderReport(this.currentReport);
-        }
-      });
-    });
-  }
-  
-  private renderMetricsGrid(summary: AuditSummary): void {
-    const container = this.container.querySelector('#metrics-grid') as HTMLElement;
-    if (!container) return;
-    
-    container.innerHTML = `
-      <div class="metric-card">
-        <div class="metric-value">${summary.modulesSuccessful}/${summary.modulesRun}</div>
-        <div class="metric-label">Modules Passed</div>
+        `,
+          )
+          .join("")}
       </div>
-      <div class="metric-card">
-        <div class="metric-value">${summary.totalAnomalies}</div>
-        <div class="metric-label">Total Anomalies</div>
+    </details>
+  `;
+    })
+    .join("");
+}
+
+/* ------------------------------------------------------------------ */
+/*  Trust score colour & ring SVG                                     */
+/* ------------------------------------------------------------------ */
+function scoreColor(score: number): string {
+  if (score >= 80) return "var(--accent-green)";
+  if (score >= 50) return "#ffaa00";
+  return "var(--accent-red)";
+}
+
+const RING_RADIUS = 56;
+const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
+
+function renderTrustRing(score: number): string {
+  const color = scoreColor(score);
+  const offset = RING_CIRCUMFERENCE * (1 - score / 100);
+  return `
+    <svg viewBox="0 0 128 128" class="trust-ring">
+      <circle cx="64" cy="64" r="${RING_RADIUS}" class="ring-bg" />
+      <circle cx="64" cy="64" r="${RING_RADIUS}" class="ring-fg"
+        style="stroke:${color}; stroke-dasharray:${RING_CIRCUMFERENCE}; stroke-dashoffset:${offset}" />
+    </svg>
+    <div class="trust-label" style="color:${color}">
+      <span class="trust-pct">${score}%</span>
+      <span class="trust-text">${score >= 80 ? "Trusted" : score >= 50 ? "Caution" : "Compromised"}</span>
+    </div>
+  `;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Stats bar                                                         */
+/* ------------------------------------------------------------------ */
+function renderStats(probes: ProbeResult[], anomaliesCount: number, blockedCount: number): string {
+  return `
+    <div class="stats-bar">
+      <div class="stat-card">
+        <span class="stat-value">${probes.length}</span>
+        <span class="stat-label">Probes</span>
       </div>
-      <div class="metric-card critical">
-        <div class="metric-value">${summary.criticalAnomalies}</div>
-        <div class="metric-label">Critical</div>
+      <div class="stat-card">
+        <span class="stat-value" style="color:${anomaliesCount > 0 ? "var(--accent-red)" : "var(--accent-green)"}">${anomaliesCount}</span>
+        <span class="stat-label">Anomalies</span>
       </div>
-      <div class="metric-card warning">
-        <div class="metric-value">${summary.highAnomalies}</div>
-        <div class="metric-label">High Severity</div>
+      <div class="stat-card">
+        <span class="stat-value" style="color:${blockedCount > 0 ? "var(--accent-magenta)" : "var(--text-muted)"}">${blockedCount}</span>
+        <span class="stat-label">Blocked</span>
       </div>
-      <div class="metric-card">
-        <div class="metric-value">${summary.modulesFailed}</div>
-        <div class="metric-label">Modules Failed</div>
-      </div>
-      <div class="metric-card">
-        <div class="metric-value">${(Date.now() - this.startTime).toFixed(0)}ms</div>
-        <div class="metric-label">Total Duration</div>
-      </div>
-    `;
-  }
-  
-  private renderConfigToggles(config: SpecterConfig): void {
-    const container = this.container.querySelector('#config-toggles') as HTMLElement;
-    if (!container) return;
-    
-    container.innerHTML = Object.entries(config.modules)
-      .map(([key, enabled]) => `
-        <label class="config-toggle">
-          <input type="checkbox" ${enabled ? 'checked' : ''} data-module="${key}">
-          <span class="toggle-slider"></span>
-          <span class="toggle-label">${key}</span>
-        </label>
-      `).join('');
-    
-    container.querySelectorAll('input').forEach(input => {
-      input.addEventListener('change', (e) => {
-        const target = e.target as HTMLInputElement;
-        this.engine.updateConfig({
-          modules: { [target.dataset.module!]: target.checked }
-        });
-      });
-    });
-  }
-  
-  private updateTimestamp(timestamp: number): void {
-    const el = this.container.querySelector('#report-timestamp') as HTMLElement;
-    if (el) {
-      el.textContent = `Last audit: ${new Date(timestamp).toLocaleString()}`;
-    }
-  }
-  
-  private exportReport(): void {
-    if (!this.currentReport) return;
-    
-    const blob = new Blob([JSON.stringify(this.currentReport, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `specterjs-report-${Date.now()}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-  }
-  
-  private clearReport(): void {
-    this.currentReport = null;
-    this.selectedModule = null;
-    this.renderTrustScore({
-      overall: 0,
-      breakdown: { prototypeIntegrity: 0, executionContext: 0, hardwareEntropy: 0, networkIntegrity: 0, timingIntegrity: 0 },
-      verdict: 'unknown',
-      anomalies: [],
-      timestamp: Date.now()
-    });
-    this.anomalyVisualizer.setAnomalies([]);
-    this.container.querySelector('#module-cards')!.innerHTML = '';
-    this.container.querySelector('#metrics-grid')!.innerHTML = '';
-    this.updateTimestamp(0);
-  }
-  
-  private startAutoRefresh(): void {
-    setInterval(() => {
-      if (!this.isRunning && this.currentReport) {
-        this.updateTimestamp(this.currentReport.timestamp);
-      }
-    }, 1000);
-  }
+    </div>
+  `;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Main render entry point                                           */
+/* ------------------------------------------------------------------ */
+export function render(report: AuditReport, root: HTMLElement): void {
+  const groups = groupProbes(report.probes);
+
+  root.innerHTML = `
+    <div class="dashboard">
+      <header class="dashboard-header">
+        <div class="header-brand">
+          <span class="header-logo">\uD83D\uDD2E</span>
+          <h1>SPECTERJS</h1>
+        </div>
+        <p class="header-subtitle">Browser Integrity &amp; Fingerprint Audit</p>
+        <div class="header-meta">
+          <span>v${escapeHtml(report.version)}</span>
+          <span class="meta-sep">|</span>
+          <span>${escapeHtml(new Date(report.timestamp).toLocaleString())}</span>
+        </div>
+      </header>
+
+      <section class="trust-section">
+        ${renderTrustRing(report.trust.score)}
+        ${renderStats(report.probes, report.trust.anomalyCount, report.trust.blockedCount)}
+      </section>
+
+      <section class="categories-section">
+        <h2 class="section-title">Module Integrity Breakdown</h2>
+        <div class="categories-grid">
+          ${Object.entries(report.trust.categories)
+            .map(
+              ([key, val]) => `
+            <div class="category-chip">
+              <span class="chip-label">${escapeHtml(key)}</span>
+              <span class="chip-score" style="color:${scoreColor(val)}">${val}%</span>
+            </div>
+          `,
+            )
+            .join("")}
+        </div>
+      </section>
+
+      ${report.trust.hardening.length > 0 ? `
+      <section class="hardening-section">
+        <h2 class="section-title">Privacy &amp; Hardening Status</h2>
+        <div class="hardening-grid">
+          ${report.trust.hardening.map((h) => `
+            <div class="hardening-badge">
+              <div class="hardening-badge-header">
+                <span class="hardening-icon">${hardeningIcon(h.code)}</span>
+                <span class="hardening-label">${escapeHtml(h.title)}</span>
+              </div>
+              <div class="hardening-detail">${escapeHtml(h.detail)}</div>
+              <div class="hardening-source">${escapeHtml(h.source)}</div>
+            </div>
+          `).join("")}
+        </div>
+      </section>
+      ` : ""}
+
+      <section class="modules-section">
+        <h2 class="section-title">Probe Modules</h2>
+        ${renderModuleCards(groups)}
+      </section>
+
+      ${report.anomalies.length > 0 ? `
+      <section class="anomalies-section">
+        <h2 class="section-title">Anomaly Details (${report.anomalies.length})</h2>
+        ${renderAnomalyList(report.anomalies)}
+      </section>
+      ` : ""}
+
+      <footer class="dashboard-footer">
+        <p>SpecterJS v${escapeHtml(report.version)} &mdash; ${escapeHtml(report.userAgent.slice(0, 80))}</p>
+      </footer>
+    </div>
+  `;
+}
+
+function escapeHtml(text: string): string {
+  const div = document.createElement("div");
+  div.textContent = text;
+  return div.innerHTML;
 }

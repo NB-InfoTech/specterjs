@@ -1,18 +1,17 @@
 {
   "name": "specterjs",
-  "version": "1.0.0",
-  "description": "Browser environment audit and fingerprinting framework",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Modern browser integrity & anti-fingerprinting lie detection framework",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
-    "preview": "vite preview --outDir docs",
-    "deploy": "npm run build && gh-pages -d docs"
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
-    "esbuild": "^0.28.1",
-    "gh-pages": "^6.3.0",
-    "typescript": "^5.3.3",
-    "vite": "^8.1.5"
+    "typescript": "^5.5.0",
+    "vite": "^5.4.0"
   }
 }

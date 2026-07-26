@@ -1,353 +1,165 @@
-import type {
-  AuditResult,
-  Anomaly,
-  WebAudioResult,
-  WebAudioAnomaly,
-  SpecterConfig,
-  ModuleRunner
-} from '../core/types.js';
+import type { ProbeResult, LieReport } from "../types/index.js";
 
-const SAMPLE_RATE = 44100;
-const DURATION = 0.1;
-const OSCILLATOR_FREQ = 440;
-const OSCILLATOR_TYPE = 'sine' as OscillatorType;
-const COMPRESSOR_THRESHOLD = -50;
-const COMPRESSOR_KNEE = 40;
-const COMPRESSOR_RATIO = 12;
-const COMPRESSOR_ATTACK = 0;
-const COMPRESSOR_RELEASE = 0.25;
+const MODULE = "webAudio";
 
-function hashBuffer(buffer: ArrayBuffer | Uint8Array): string {
-  const data = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
-  let hash = 0;
+/** FNV-1a 32-bit hash */
+function fnv1a(data: string): string {
+  let hash = 0x811c9dc5 >>> 0;
   for (let i = 0; i < data.length; i++) {
-    hash = ((hash << 5) - hash) + data[i];
-    hash |= 0;
+    hash ^= data.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
   }
-  return Math.abs(hash).toString(16).padStart(8, '0');
+  return hash.toString(16).padStart(8, "0");
 }
 
-function hashString(str: string): string {
-  let hash = 0;
-  for (let i = 0; i < str.length; i++) {
-    hash = ((hash << 5) - hash) + str.charCodeAt(i);
-    hash |= 0;
-  }
-  return Math.abs(hash).toString(16).padStart(8, '0');
-}
-
-function hashFloat32Array(arr: Float32Array): string {
-  let hash = 0;
-  for (let i = 0; i < arr.length; i++) {
-    const val = Math.round(arr[i] * 1000000);
-    hash = ((hash << 5) - hash) + val;
-    hash |= 0;
-  }
-  return Math.abs(hash).toString(16).padStart(8, '0');
-}
-
-function generateOscillatorFingerprint(context: OfflineAudioContext): string {
-  const oscillator = context.createOscillator();
-  oscillator.type = OSCILLATOR_TYPE;
-  oscillator.frequency.value = OSCILLATOR_FREQ;
-  
-  const gain = context.createGain();
-  gain.gain.value = 0.5;
-  
-  oscillator.connect(gain);
-  gain.connect(context.destination);
-  
-  oscillator.start(0);
-  oscillator.stop(DURATION);
-  
-  return 'oscillator-configured';
-}
-
-function generateCompressorFingerprint(context: OfflineAudioContext): string {
-  const compressor = context.createDynamicsCompressor();
-  compressor.threshold.value = COMPRESSOR_THRESHOLD;
-  compressor.knee.value = COMPRESSOR_KNEE;
-  compressor.ratio.value = COMPRESSOR_RATIO;
-  compressor.attack.value = COMPRESSOR_ATTACK;
-  compressor.release.value = COMPRESSOR_RELEASE;
-  
-  const oscillator = context.createOscillator();
-  oscillator.type = 'square';
-  oscillator.frequency.value = 220;
-  
-  const gain = context.createGain();
-  gain.gain.value = 1.0;
-  
-  oscillator.connect(compressor);
-  compressor.connect(gain);
-  gain.connect(context.destination);
-  
-  oscillator.start(0);
-  oscillator.stop(DURATION);
-  
-  return 'compressor-configured';
-}
-
-function generateComplexSignalFingerprint(context: OfflineAudioContext): string {
-  const oscillator1 = context.createOscillator();
-  oscillator1.type = 'sine';
-  oscillator1.frequency.value = 440;
-  
-  const oscillator2 = context.createOscillator();
-  oscillator2.type = 'triangle';
-  oscillator2.frequency.value = 880;
-  
-  const oscillator3 = context.createOscillator();
-  oscillator3.type = 'sawtooth';
-  oscillator3.frequency.value = 220;
-  
-  const gain1 = context.createGain();
-  gain1.gain.value = 0.3;
-  
-  const gain2 = context.createGain();
-  gain2.gain.value = 0.2;
-  
-  const gain3 = context.createGain();
-  gain3.gain.value = 0.1;
-  
-  const merger = context.createChannelMerger(3);
-  
-  oscillator1.connect(gain1).connect(merger, 0, 0);
-  oscillator2.connect(gain2).connect(merger, 0, 1);
-  oscillator3.connect(gain3).connect(merger, 0, 2);
-  
-  merger.connect(context.destination);
-  
-  oscillator1.start(0);
-  oscillator2.start(0);
-  oscillator3.start(0);
-  
-  oscillator1.stop(DURATION);
-  oscillator2.stop(DURATION);
-  oscillator3.stop(DURATION);
-  
-  return 'complex-signal-configured';
-}
-
-async function runAudioContextTest(
-  contextFactory: () => OfflineAudioContext,
-  setupFn: (ctx: OfflineAudioContext) => void,
-  label: string
-): Promise<{ fingerprint: string; latency: number; sampleRate: number; channelCount: number; anomalies: WebAudioAnomaly[] }> {
-  const anomalies: WebAudioAnomaly[] = [];
-  const startTime = performance.now();
-  
+function runProbe(
+  probes: ProbeResult[],
+  anomalies: LieReport[],
+  id: string,
+  label: string,
+  severity: number,
+  check: () => { passed: boolean; value: unknown; detail?: string },
+): void {
+  const start = performance.now();
   try {
-    const context = contextFactory();
-    const expectedSampleRate = SAMPLE_RATE;
-    const expectedChannelCount = 1;
-    
-    if (context.sampleRate !== expectedSampleRate) {
-      anomalies.push({
-        type: 'sample_rate_anomaly',
-        expected: expectedSampleRate,
-        actual: context.sampleRate,
-        severity: 'medium'
-      });
-    }
-    
-    if (context.destination.channelCount !== expectedChannelCount) {
-      anomalies.push({
-        type: 'audio_context_tampering',
-        expected: expectedChannelCount,
-        actual: context.destination.channelCount,
-        severity: 'low'
-      });
-    }
-    
-    setupFn(context);
-    
-    const buffer = await context.startRendering();
-    
-    const latency = performance.now() - startTime;
-    
-    const channelData = buffer.getChannelData(0);
-    const fingerprint = hashFloat32Array(channelData);
-    
-    if (latency > 5000) {
-      anomalies.push({
-        type: 'latency_anomaly',
-        expected: '< 5000ms',
-        actual: `${latency.toFixed(2)}ms`,
-        severity: 'medium'
-      });
-    }
-    
-    const rms = Math.sqrt(channelData.reduce((sum, val) => sum + val * val, 0) / channelData.length);
-    if (rms === 0) {
-      anomalies.push({
-        type: 'oscillator_anomaly',
-        expected: 'non-zero signal',
-        actual: 'silent output',
-        severity: 'high'
-      });
-    }
-    
-    return {
-      fingerprint,
-      latency,
-      sampleRate: context.sampleRate,
-      channelCount: context.destination.channelCount,
-      anomalies
-    };
-  } catch (error) {
-    anomalies.push({
-      type: 'audio_context_tampering',
-      expected: 'successful render',
-      actual: `error: ${error instanceof Error ? error.message : String(error)}`,
-      severity: 'critical'
+    const r = check();
+    probes.push({
+      id: `audio:${id}`,
+      label,
+      status: r.passed ? "success" : "error",
+      value: r.value,
+      durationMs: Math.round(performance.now() - start),
     });
-    
-    return {
-      fingerprint: 'error',
-      latency: performance.now() - startTime,
-      sampleRate: 0,
-      channelCount: 0,
-      anomalies
-    };
+    if (!r.passed) {
+      anomalies.push({
+        code: id,
+        title: label,
+        detail: r.detail ?? "Unexpected result",
+        severity,
+        source: MODULE,
+      });
+    }
+  } catch (err) {
+    probes.push({
+      id: `audio:${id}`,
+      label,
+      status: "blocked",
+      value: null,
+      message: err instanceof Error ? err.message : String(err),
+      durationMs: Math.round(performance.now() - start),
+    });
   }
 }
 
-function calculateAudioEntropy(buffer: AudioBuffer): number {
-  let entropy = 0;
-  for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
-    const data = buffer.getChannelData(ch);
-    const histogram = new Map<number, number>();
-    
-    for (let i = 0; i < data.length; i++) {
-      const quantized = Math.round(data[i] * 1000) / 1000;
-      histogram.set(quantized, (histogram.get(quantized) || 0) + 1);
-    }
-    
-    for (const count of histogram.values()) {
-      const p = count / data.length;
-      if (p > 0) entropy -= p * Math.log2(p);
-    }
+/* ------------------------------------------------------------------ */
+/*  Async audio fingerprint rendering                                 */
+/* ------------------------------------------------------------------ */
+async function renderAudioFingerprint(): Promise<{
+  hash: string;
+  samples: number;
+  channels: number;
+} | null> {
+  const ctx = new OfflineAudioContext({ numberOfChannels: 1, length: 44100, sampleRate: 44100 });
+
+  const osc = ctx.createOscillator();
+  osc.type = "sawtooth";
+  osc.frequency.value = 440;
+
+  const osc2 = ctx.createOscillator();
+  osc2.type = "triangle";
+  osc2.frequency.value = 880;
+
+  const compressor = ctx.createDynamicsCompressor();
+  compressor.threshold.value = -50;
+  compressor.knee.value = 40;
+  compressor.ratio.value = 12;
+  compressor.attack.value = 0;
+  compressor.release.value = 0.25;
+
+  const gain = ctx.createGain();
+  gain.gain.value = 0.3;
+
+  osc.connect(compressor);
+  osc2.connect(compressor);
+  compressor.connect(gain);
+  gain.connect(ctx.destination);
+
+  osc.start(0);
+  osc2.start(0);
+
+  const buffer = await ctx.startRendering();
+  const channel = buffer.getChannelData(0);
+
+  if (!channel || channel.length === 0) return null;
+
+  /* Downsample to 1024 samples for a stable fingerprint */
+  const step = Math.max(1, Math.floor(channel.length / 1024));
+  const values: number[] = [];
+  for (let i = 0; i < channel.length && values.length < 1024; i += step) {
+    values.push(channel[i] ?? 0);
   }
-  return entropy / buffer.numberOfChannels;
+
+  const hash = fnv1a(values.map((v) => v.toFixed(6)).join("|"));
+  return { hash, samples: channel.length, channels: buffer.numberOfChannels };
 }
 
-export async function runWebAudio(config: SpecterConfig): Promise<AuditResult<WebAudioResult>> {
-  const startTime = performance.now();
-  const anomalies: Anomaly[] = [];
-  
+/* ------------------------------------------------------------------ */
+/*  Main entry point                                                  */
+/* ------------------------------------------------------------------ */
+export async function execute(): Promise<{
+  probes: ProbeResult[];
+  anomalies: LieReport[];
+}> {
+  const probes: ProbeResult[] = [];
+  const anomalies: LieReport[] = [];
+
+  /* ---- Availability check ---- */
   try {
-    const contextFactory = () => new OfflineAudioContext(1, SAMPLE_RATE * DURATION, SAMPLE_RATE);
-    
-    const [oscillatorResult, compressorResult, complexResult] = await Promise.all([
-      runAudioContextTest(contextFactory, generateOscillatorFingerprint, 'oscillator'),
-      runAudioContextTest(contextFactory, generateCompressorFingerprint, 'compressor'),
-      runAudioContextTest(contextFactory, generateComplexSignalFingerprint, 'complex')
-    ]);
-    
-    const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-    const latency = audioContext.baseLatency || 0;
-    audioContext.close();
-    
-    const result: WebAudioResult = {
-      fingerprint: hashString(`${oscillatorResult.fingerprint}|${compressorResult.fingerprint}|${complexResult.fingerprint}`),
-      oscillatorFingerprint: oscillatorResult.fingerprint,
-      compressorFingerprint: compressorResult.fingerprint,
-      latency,
-      sampleRate: oscillatorResult.sampleRate,
-      channelCount: oscillatorResult.channelCount,
-      anomalies: [
-        ...oscillatorResult.anomalies,
-        ...compressorResult.anomalies,
-        ...complexResult.anomalies
-      ]
-    };
-    
-    for (const anomaly of result.anomalies) {
-      anomalies.push({
-        id: `webaudio-${anomaly.type}-${Date.now()}`,
-        module: 'webAudio',
-        severity: anomaly.severity,
-        category: anomaly.type.includes('tampering') ? 'hardware_spoofing' : 'entropy_anomaly',
-        description: `Web Audio anomaly: ${anomaly.type}`,
-        expected: anomaly.expected,
-        actual: anomaly.actual,
-        evidence: { ...anomaly },
-        confidence: anomaly.severity === 'critical' ? 0.95 : anomaly.severity === 'high' ? 0.85 : 0.7,
-        timestamp: Date.now()
-      });
-    }
-    
-    const duration = performance.now() - startTime;
-    
-    return {
-      module: 'webAudio',
-      timestamp: Date.now(),
-      duration,
-      success: true,
-      data: result,
-      anomalies
-    };
-  } catch (error) {
-    return {
-      module: 'webAudio',
-      timestamp: Date.now(),
-      duration: performance.now() - startTime,
-      success: false,
-      data: {} as WebAudioResult,
-      anomalies: [{
-        id: `webaudio-error-${Date.now()}`,
-        module: 'webAudio',
-        severity: 'critical',
-        category: 'entropy_anomaly',
-        description: `Module execution failed: ${error instanceof Error ? error.message : String(error)}`,
-        expected: 'Successful execution',
-        actual: 'Error',
-        evidence: { error: String(error) },
-        confidence: 0.9,
-        timestamp: Date.now()
-      }],
-      error: String(error)
-    };
+    new OfflineAudioContext({ numberOfChannels: 1, length: 1, sampleRate: 44100 });
+  } catch {
+    runProbe(probes, anomalies, "availability", "OfflineAudioContext availability", 3, () => ({
+      passed: false,
+      value: "unavailable",
+      detail: "OfflineAudioContext is blocked or not supported",
+    }));
+    return { probes, anomalies };
   }
-}
 
-export const webAudioRunner: ModuleRunner<WebAudioResult> = {
-  name: 'webAudio',
-  run: runWebAudio,
-  validate: (data) => {
-    const anomalies: Anomaly[] = [];
-    
-    if (!data.fingerprint || data.fingerprint === 'error') {
-      anomalies.push({
-        id: `webaudio-validate-${Date.now()}`,
-        module: 'webAudio',
-        severity: 'high',
-        category: 'entropy_anomaly',
-        description: 'Audio fingerprint generation failed',
-        expected: 'Valid fingerprint',
-        actual: data.fingerprint,
-        evidence: {},
-        confidence: 0.8,
-        timestamp: Date.now()
-      });
-    }
-    
-    if (data.latency > 10000) {
-      anomalies.push({
-        id: `webaudio-latency-${Date.now()}`,
-        module: 'webAudio',
-        severity: 'medium',
-        category: 'timing_anomaly',
-        description: 'Excessive audio rendering latency',
-        expected: '< 10000ms',
-        actual: `${data.latency.toFixed(2)}ms`,
-        evidence: { latency: data.latency },
-        confidence: 0.7,
-        timestamp: Date.now()
-      });
-    }
-    
-    return anomalies;
+  runProbe(probes, anomalies, "availability", "OfflineAudioContext availability", 0, () => ({
+    passed: true,
+    value: "available",
+  }));
+
+  /* ---- Audio fingerprint ---- */
+  const start = performance.now();
+  let fp: Awaited<ReturnType<typeof renderAudioFingerprint>> = null;
+  try {
+    fp = await renderAudioFingerprint();
+  } catch (err) {
+    runProbe(probes, anomalies, "fingerprint", "AudioContext dynamics fingerprint", 4, () => ({
+      passed: false,
+      value: null,
+      detail: err instanceof Error ? err.message : "Audio rendering failed",
+    }));
+    return { probes, anomalies };
   }
-};
+
+  if (!fp) {
+    runProbe(probes, anomalies, "fingerprint", "AudioContext dynamics fingerprint", 4, () => ({
+      passed: false,
+      value: null,
+      detail: "Audio buffer is empty",
+    }));
+    return { probes, anomalies };
+  }
+
+  probes.push({
+    id: "audio:fingerprint",
+    label: "AudioContext dynamics fingerprint",
+    status: "success",
+    value: { hash: fp.hash, samples: fp.samples, channels: fp.channels },
+    durationMs: Math.round(performance.now() - start),
+  });
+
+  return { probes, anomalies };
+}

@@ -1,548 +1,364 @@
-import type {
-  AuditResult,
-  Anomaly,
-  PrototypeIntegrityResult,
-  PrototypeCheckResult,
-  PrototypeAnomaly,
-  ProxyDetectionResult,
-  FunctionIntegrityResult,
-  SpecterConfig,
-  ModuleRunner
-} from '../core/types.js';
+import type { ProbeResult, LieReport } from "../types/index.js";
 
-const EXPECTED_NAVIGATOR_PROTOTYPE_PROPS = [
-  'appCodeName', 'appName', 'appVersion', 'platform', 'product',
-  'userAgent', 'vendor', 'language', 'languages', 'cookieEnabled',
-  'onLine', 'hardwareConcurrency', 'deviceMemory', 'maxTouchPoints',
-  'vendorSub', 'productSub', 'buildID', 'oscpu', 'connection',
-  'mediaCapabilities', 'gpu', 'mediaDevices', 'bluetooth',
-  'credentials', 'keyboard', 'locks', 'managed', 'mediaSession',
-  'permissions', 'presentation', 'serviceWorker', 'storage',
-  'wakeLock', 'xr', 'clipboard', 'hid', 'serial', 'usb',
-  'getGamepads', 'getVRDisplays', 'javaEnabled', 'taintEnabled',
-  'sendBeacon', 'vibrate', 'getBattery', 'registerProtocolHandler',
-  'unregisterProtocolHandler', 'geolocation', 'doNotTrack',
-  'deviceMemory', 'maxTouchPoints', 'hardwareConcurrency',
-  'connection', 'userActivation', 'scheduling', 'virtualKeyboard',
-  'windowControlsOverlay', 'onLine'
-];
+type ProbeStatus = "success" | "blocked" | "error";
 
-const EXPECTED_SCREEN_PROTOTYPE_PROPS = [
-  'width', 'height', 'availWidth', 'availHeight', 'colorDepth',
-  'pixelDepth', 'orientation', 'pixelDepth', 'deviceXDPI', 'deviceYDPI',
-  'logicalXDPI', 'logicalYDPI', 'systemXDPI', 'systemYDPI',
-  'availTop', 'availLeft', 'bufferDepth', 'updateInterval',
-  'onchange', 'onorientationchange'
-];
+interface CheckOutput {
+  passed: boolean;
+  value: unknown;
+  detail?: string;
+}
 
-const EXPECTED_CANVAS_PROTOTYPE_PROPS = [
-  'width', 'height', 'style', 'getContext', 'toDataURL', 'toBlob',
-  'toBlobCallback', 'transferControlToOffscreen', 'captureStream',
-  'getContextAttributes', 'requestPointerLock', 'exitPointerLock',
-  'onpointerlockchange', 'onpointerlockerror'
-];
+interface NativeFnDef {
+  id: string;
+  label: string;
+  severity: number;
+  fn: () => Function | null;
+}
 
-const EXPECTED_WEBGL_PROTOTYPE_PROPS = [
-  'canvas', 'drawingBufferWidth', 'drawingBufferHeight',
-  'getContextAttributes', 'isContextLost', 'getExtension',
-  'getSupportedExtensions', 'getParameter', 'getError',
-  'getContextAttributes', 'isContextLost', 'getSupportedExtensions'
-];
+interface ProtoPairDef {
+  id: string;
+  label: string;
+  severity: number;
+  accessor: (w: Window) => object | null;
+}
 
-const NATIVE_FUNCTION_NAMES = [
-  'toString', 'toString', 'valueOf', 'hasOwnProperty',
-  'isPrototypeOf', 'propertyIsEnumerable', 'toLocaleString',
-  'constructor', 'apply', 'call', 'bind', 'length', 'name',
-  'prototype', 'arguments', 'caller'
-];
+const MODULE = "prototypeIntegrity";
 
-const NATIVE_FUNCTION_SOURCES = new Map([
-  ['navigator.getBattery', 'function getBattery() { [native code] }'],
-  ['navigator.getGamepads', 'function getGamepads() { [native code] }'],
-  ['navigator.javaEnabled', 'function javaEnabled() { [native code] }'],
-  ['navigator.sendBeacon', 'function sendBeacon() { [native code] }'],
-  ['navigator.vibrate', 'function vibrate() { [native code] }'],
-  ['navigator.registerProtocolHandler', 'function registerProtocolHandler() { [native code] }'],
-  ['navigator.unregisterProtocolHandler', 'function unregisterProtocolHandler() { [native code] }'],
-  ['screen.orientation.lock', 'function lock() { [native code] }'],
-  ['screen.orientation.unlock', 'function unlock() { [native code] }'],
-  ['canvas.getContext', 'function getContext() { [native code] }'],
-  ['canvas.toDataURL', 'function toDataURL() { [native code] }'],
-  ['canvas.toBlob', 'function toBlob() { [native code] }'],
-  ['WebGLRenderingContext.getParameter', 'function getParameter() { [native code] }'],
-  ['WebGLRenderingContext.getExtension', 'function getExtension() { [native code] }'],
-  ['AudioContext.createOscillator', 'function createOscillator() { [native code] }'],
-  ['AudioContext.createDynamicsCompressor', 'function createDynamicsCompressor() { [native code] }'],
-  ['RTCPeerConnection.createDataChannel', 'function createDataChannel() { [native code] }'],
-  ['RTCPeerConnection.createOffer', 'function createOffer() { [native code] }'],
-  ['RTCPeerConnection.createAnswer', 'function createAnswer() { [native code] }'],
-  ['performance.now', 'function now() { [native code] }'],
-  ['crypto.getRandomValues', 'function getRandomValues() { [native code] }'],
-  ['crypto.subtle.digest', 'function digest() { [native code] }']
-]);
-
-const KNOWN_PROXY_TRAPS = [
-  'get', 'set', 'has', 'deleteProperty', 'defineProperty',
-  'getOwnPropertyDescriptor', 'ownKeys', 'getPrototypeOf',
-  'setPrototypeOf', 'isExtensible', 'preventExtensions',
-  'apply', 'construct'
-];
-
-function isProxy(target: unknown): { isProxy: boolean; traps?: string[] } {
-  if ((typeof target !== 'object' && typeof target !== 'function') || target === null) {
-    return { isProxy: false };
-  }
+/* ------------------------------------------------------------------ */
+/*  Helper: run a single probe with timing, error boundary & anomaly  */
+/* ------------------------------------------------------------------ */
+function runProbe(
+  probes: ProbeResult[],
+  anomalies: LieReport[],
+  id: string,
+  label: string,
+  severity: number,
+  check: () => CheckOutput,
+): void {
+  const start = performance.now();
 
   try {
-    const proxy = new Proxy(target, {});
-    const traps: string[] = [];
-    
-    for (const trap of KNOWN_PROXY_TRAPS) {
-      try {
-        const desc = Object.getOwnPropertyDescriptor(proxy, trap);
-        if (desc) traps.push(trap);
-      } catch {
-        // trap might not exist
-      }
-    }
-    
-    return { isProxy: false };
-  } catch {
-    try {
-      new Proxy(target, {});
-      return { isProxy: true, traps: [] };
-    } catch {
-      return { isProxy: false };
-    }
-  }
-}
+    const result = check();
+    const status: ProbeStatus = result.passed ? "success" : "error";
 
-function getPrototypeChain(obj: object): object[] {
-  const chain: object[] = [];
-  let current: object | null = obj;
-  while (current && current !== Object.prototype) {
-    chain.push(current);
-    current = Object.getPrototypeOf(current);
-  }
-  return chain;
-}
+    probes.push({
+      id: `prototype:${id}`,
+      label,
+      status,
+      value: result.value,
+      durationMs: Math.round(performance.now() - start),
+    });
 
-function getOwnPropertyNamesSafe(obj: object): string[] {
-  try {
-    return Object.getOwnPropertyNames(obj);
-  } catch {
-    return [];
-  }
-}
-
-function getPropertyDescriptorSafe(obj: object, prop: string): PropertyDescriptor | undefined {
-  try {
-    return Object.getOwnPropertyDescriptor(obj, prop);
-  } catch {
-    return undefined;
-  }
-}
-
-function isNativeFunction(fn: Function): boolean {
-  const source = fn.toString();
-  return source.includes('[native code]');
-}
-
-function getFunctionSource(fn: Function): string {
-  try {
-    return fn.toString();
-  } catch {
-    return '[unable to get source]';
-  }
-}
-
-function checkPrototypeIntegrity(
-  obj: object,
-  expectedProps: string[],
-  objectName: string
-): PrototypeCheckResult {
-  const ownProperties = getOwnPropertyNamesSafe(obj);
-  const prototypeProperties: string[] = [];
-  const anomalies: PrototypeAnomaly[] = [];
-  
-  const proto = Object.getPrototypeOf(obj);
-  if (proto) {
-    prototypeProperties.push(...getOwnPropertyNamesSafe(proto));
-  }
-  
-  for (const prop of expectedProps) {
-    const hasOwn = ownProperties.includes(prop);
-    const hasProto = prototypeProperties.includes(prop);
-    
-    if (!hasOwn && !hasProto) {
+    if (!result.passed) {
       anomalies.push({
-        property: prop,
-        type: 'missing_prototype_property',
-        expected: 'present on prototype',
-        actual: 'missing',
-        severity: 'medium',
-        evidence: { objectName, property: prop, location: 'prototype chain' }
+        code: id,
+        title: label,
+        detail: result.detail ?? "Unexpected value – possible tampering",
+        severity,
+        source: MODULE,
       });
     }
-    
-    if (hasOwn && !hasProto) {
-      const desc = getPropertyDescriptorSafe(obj, prop);
-      if (desc && (desc.get || desc.set)) {
-        anomalies.push({
-          property: prop,
-          type: 'getter_anomaly',
-          expected: 'data property on prototype',
-          actual: 'accessor property on instance',
-          severity: 'high',
-          evidence: { objectName, property: prop, descriptor: desc }
-        });
-      }
-    }
-  }
-  
-  for (const prop of ownProperties) {
-    if (!expectedProps.includes(prop) && !prop.startsWith('__') && !prop.startsWith('_')) {
-      const desc = getPropertyDescriptorSafe(obj, prop);
-      if (desc && typeof desc.value === 'function') {
-        anomalies.push({
-          property: prop,
-          type: 'unexpected_own_property',
-          expected: 'not present on instance',
-          actual: 'function on instance',
-          severity: 'low',
-          evidence: { objectName, property: prop, type: 'function' }
-        });
-      }
-    }
-  }
-  
-  const proxyCheck = isProxy(obj);
-  if (proxyCheck.isProxy) {
-    anomalies.push({
-      property: '[Proxy]',
-      type: 'proxy_detected',
-      expected: 'native object',
-      actual: 'Proxy object detected',
-      severity: 'critical',
-      evidence: { objectName, traps: proxyCheck.traps }
+  } catch (err) {
+    probes.push({
+      id: `prototype:${id}`,
+      label,
+      status: "blocked",
+      value: null,
+      message: err instanceof Error ? err.message : String(err),
+      durationMs: Math.round(performance.now() - start),
     });
   }
-  
-  return {
-    objectName,
-    ownProperties,
-    prototypeProperties,
-    anomalies
-  };
 }
 
-function detectProxies(targets: Record<string, unknown>): ProxyDetectionResult[] {
-  const results: ProxyDetectionResult[] = [];
-  
-  for (const [name, target] of Object.entries(targets)) {
-    if (target && typeof target === 'object') {
-      try {
-        const proxy = new Proxy(target as object, {});
-        const isProxy = proxy !== target;
-        
-        let traps: string[] | undefined;
-        if (isProxy) {
-          try {
-            const handler = {
-              get: () => {},
-              set: () => true,
-              has: () => true
-            };
-            for (const trap of KNOWN_PROXY_TRAPS) {
-              traps = traps || [];
-              traps.push(trap);
-            }
-          } catch {
-          }
-        }
-        
-        results.push({
-          target: name,
-          isProxy,
-          traps,
-          evidence: { targetType: typeof target, constructor: (target as object).constructor?.name }
-        });
-      } catch {
-        results.push({
-          target: name,
-          isProxy: false,
-          evidence: { error: 'Unable to test proxy' }
-        });
-      }
-    }
-  }
-  
-  return results;
-}
-
-function checkFunctionIntegrity(): FunctionIntegrityResult[] {
-  const results: FunctionIntegrityResult[] = [];
-  
-  for (const [name, expectedSource] of NATIVE_FUNCTION_SOURCES.entries()) {
-    const parts = name.split('.');
-    let obj: unknown = window;
-    
-    for (const part of parts.slice(0, -1)) {
-      obj = (obj as Record<string, unknown>)?.[part];
-      if (!obj) break;
-    }
-    
-    const fnName = parts[parts.length - 1];
-    const fn = obj && typeof obj === 'object' ? (obj as Record<string, unknown>)[fnName] : undefined;
-    
-    if (typeof fn === 'function') {
-      const actualSource = getFunctionSource(fn as Function);
-      const isNative = isNativeFunction(fn as Function);
-      const expectedBody = expectedSource.split('{')[1]?.split('}')[0] || '';
-      const isTampered = !actualSource.includes('[native code]') || 
-                         (expectedBody !== '' && !actualSource.includes(expectedBody));
-      
-      const anomalies: string[] = [];
-      if (!isNative) anomalies.push('Function is not native');
-      if (isTampered) anomalies.push('Function source code appears modified');
-      if (actualSource.length > 500) anomalies.push('Function source unusually long');
-      
-      results.push({
-        functionName: name,
-        expectedSource,
-        actualSource: actualSource.slice(0, 500),
-        isNative,
-        isTampered,
-        anomalies
-      });
-    } else {
-      results.push({
-        functionName: name,
-        expectedSource,
-        actualSource: '[function not found]',
-        isNative: false,
-        isTampered: true,
-        anomalies: ['Function not found or not a function']
-      });
-    }
-  }
-  
-  return results;
-}
-
-function checkGlobalPrototypes(): PrototypeCheckResult[] {
-  const results: PrototypeCheckResult[] = [];
-  
-  const globalObjects = [
-    { obj: Array.prototype, name: 'Array.prototype', expected: ['push', 'pop', 'shift', 'unshift', 'slice', 'splice', 'map', 'filter', 'forEach', 'reduce', 'find', 'includes', 'indexOf', 'join', 'toString', 'length'] },
-    { obj: Object.prototype, name: 'Object.prototype', expected: ['toString', 'valueOf', 'hasOwnProperty', 'isPrototypeOf', 'propertyIsEnumerable', 'constructor'] },
-    { obj: Function.prototype, name: 'Function.prototype', expected: ['apply', 'call', 'bind', 'toString', 'length', 'name', 'prototype'] },
-    { obj: String.prototype, name: 'String.prototype', expected: ['length', 'charAt', 'charCodeAt', 'slice', 'substring', 'substr', 'indexOf', 'lastIndexOf', 'toLowerCase', 'toUpperCase', 'trim', 'split', 'replace', 'match', 'search', 'includes', 'startsWith', 'endsWith'] },
-    { obj: Number.prototype, name: 'Number.prototype', expected: ['toString', 'toFixed', 'toPrecision', 'toExponential', 'valueOf'] },
-    { obj: Promise.prototype, name: 'Promise.prototype', expected: ['then', 'catch', 'finally', 'constructor'] },
-    { obj: Map.prototype, name: 'Map.prototype', expected: ['get', 'set', 'has', 'delete', 'clear', 'size', 'forEach', 'keys', 'values', 'entries'] },
-    { obj: Set.prototype, name: 'Set.prototype', expected: ['add', 'has', 'delete', 'clear', 'size', 'forEach', 'keys', 'values', 'entries'] }
-  ];
-  
-  for (const { obj, name, expected } of globalObjects) {
-    results.push(checkPrototypeIntegrity(obj, expected, name));
-  }
-  
-  return results;
-}
-
-function calculatePrototypeIntegrityScore(result: PrototypeIntegrityResult): number {
-  let totalChecks = 0;
-  let passedChecks = 0;
-  
-  const allChecks = [
-    ...Object.values(result).flatMap(r => 
-      Array.isArray(r) ? r.flatMap((x: PrototypeCheckResult) => x.anomalies) : (r as PrototypeCheckResult).anomalies
-    )
-  ];
-  
-  for (const check of [result.navigator, result.screen, result.canvas, result.webgl, ...result.globalPrototypes]) {
-    totalChecks += check.anomalies.length + check.prototypeProperties.length;
-    passedChecks += check.prototypeProperties.length - check.anomalies.filter(a => a.severity === 'critical' || a.severity === 'high').length;
-  }
-  
-  totalChecks += result.proxyDetection.length;
-  passedChecks += result.proxyDetection.filter(p => !p.isProxy).length;
-  
-  totalChecks += result.functionIntegrity.length;
-  passedChecks += result.functionIntegrity.filter(f => !f.isTampered).length;
-  
-  return totalChecks > 0 ? passedChecks / totalChecks : 1;
-}
-
-export async function runPrototypeIntegrity(config: SpecterConfig): Promise<AuditResult<PrototypeIntegrityResult>> {
-  const startTime = performance.now();
-  const anomalies: Anomaly[] = [];
-  
+/* ---------------------------------------------------------------- */
+/*  1. Native Function.prototype.toString integrity checks          */
+/* ---------------------------------------------------------------- */
+function extractNativeString(fn: Function): string | null {
   try {
-    const navigatorResult = checkPrototypeIntegrity(navigator, EXPECTED_NAVIGATOR_PROTOTYPE_PROPS, 'navigator');
-    const screenResult = checkPrototypeIntegrity(screen, EXPECTED_SCREEN_PROTOTYPE_PROPS, 'screen');
-    
-    const canvas = document.createElement('canvas');
-    const canvasResult = checkPrototypeIntegrity(canvas, EXPECTED_CANVAS_PROTOTYPE_PROPS, 'HTMLCanvasElement.prototype');
-    
-    let webglResult: PrototypeCheckResult;
-    try {
-      const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
-      if (gl) {
-        webglResult = checkPrototypeIntegrity(gl, EXPECTED_WEBGL_PROTOTYPE_PROPS, 'WebGLRenderingContext');
-      } else {
-        webglResult = {
-          objectName: 'WebGLRenderingContext',
-          ownProperties: [],
-          prototypeProperties: [],
-          anomalies: [{
-            property: 'WebGLRenderingContext',
-            type: 'missing_prototype_property',
-            expected: 'available',
-            actual: 'not available',
-            severity: 'low',
-            evidence: { reason: 'WebGL not supported' }
-          }]
-        };
-      }
-    } catch {
-      webglResult = {
-        objectName: 'WebGLRenderingContext',
-        ownProperties: [],
-        prototypeProperties: [],
-        anomalies: [{
-          property: 'WebGLRenderingContext',
-          type: 'missing_prototype_property',
-          expected: 'available',
-          actual: 'error accessing',
-          severity: 'low',
-          evidence: { reason: 'Error accessing WebGL context' }
-        }]
-      };
-    }
-    
-    const proxyTargets = {
-      navigator,
-      screen,
-      window,
-      document,
-      canvas: HTMLCanvasElement.prototype,
-      console,
-      performance,
-      crypto,
-      localStorage,
-      sessionStorage,
-      indexedDB
-    };
-    const proxyDetection = detectProxies(proxyTargets);
-    
-    const functionIntegrity = checkFunctionIntegrity();
-    
-    const globalPrototypes = checkGlobalPrototypes();
-    
-    const result: PrototypeIntegrityResult = {
-      navigator: navigatorResult,
-      screen: screenResult,
-      canvas: canvasResult,
-      webgl: webglResult,
-      globalPrototypes,
-      proxyDetection,
-      functionIntegrity
-    };
-    
-    for (const check of [navigatorResult, screenResult, canvasResult, webglResult, ...globalPrototypes]) {
-      for (const anomaly of check.anomalies) {
-        anomalies.push({
-          id: `proto-${check.objectName}-${anomaly.property}-${Date.now()}`,
-          module: 'prototypeIntegrity',
-          severity: anomaly.severity,
-          category: anomaly.type === 'proxy_detected' ? 'execution_context_lie' : 'prototype_tampering',
-          description: `Prototype anomaly on ${check.objectName}.${anomaly.property}: ${anomaly.type}`,
-          expected: anomaly.expected,
-          actual: anomaly.actual,
-          evidence: anomaly.evidence,
-          confidence: anomaly.severity === 'critical' ? 0.95 : anomaly.severity === 'high' ? 0.85 : 0.7,
-          timestamp: Date.now()
-        });
-      }
-    }
-    
-    for (const proxy of proxyDetection) {
-      if (proxy.isProxy) {
-        anomalies.push({
-          id: `proxy-${proxy.target}-${Date.now()}`,
-          module: 'prototypeIntegrity',
-          severity: 'critical',
-          category: 'execution_context_lie',
-          description: `Proxy detected on ${proxy.target}`,
-          expected: 'Native object',
-          actual: 'Proxy object',
-          evidence: proxy.evidence,
-          confidence: 0.9,
-          timestamp: Date.now()
-        });
-      }
-    }
-    
-    for (const fn of functionIntegrity) {
-      if (fn.isTampered) {
-        anomalies.push({
-          id: `fn-${fn.functionName}-${Date.now()}`,
-          module: 'prototypeIntegrity',
-          severity: fn.isNative ? 'high' : 'critical',
-          category: 'prototype_tampering',
-          description: `Function tampering detected: ${fn.functionName}`,
-          expected: fn.expectedSource,
-          actual: fn.actualSource,
-          evidence: { anomalies: fn.anomalies },
-          confidence: fn.isNative ? 0.8 : 0.95,
-          timestamp: Date.now()
-        });
-      }
-    }
-    
-    const duration = performance.now() - startTime;
-    const score = calculatePrototypeIntegrityScore(result);
-    
-    return {
-      module: 'prototypeIntegrity',
-      timestamp: Date.now(),
-      duration,
-      success: true,
-      data: result,
-      anomalies
-    };
-  } catch (error) {
-    return {
-      module: 'prototypeIntegrity',
-      timestamp: Date.now(),
-      duration: performance.now() - startTime,
-      success: false,
-      data: {} as PrototypeIntegrityResult,
-      anomalies: [{
-        id: `proto-error-${Date.now()}`,
-        module: 'prototypeIntegrity',
-        severity: 'critical',
-        category: 'prototype_tampering',
-        description: `Module execution failed: ${error instanceof Error ? error.message : String(error)}`,
-        expected: 'Successful execution',
-        actual: 'Error',
-        evidence: { error: String(error) },
-        confidence: 0.9,
-        timestamp: Date.now()
-      }],
-      error: String(error)
-    };
+    const raw = Function.prototype.toString.call(fn);
+    return typeof raw === "string" ? raw : null;
+  } catch {
+    return null;
   }
 }
 
-export const prototypeIntegrityRunner: ModuleRunner<PrototypeIntegrityResult> = {
-  name: 'prototypeIntegrity',
-  run: runPrototypeIntegrity,
-  validate: (data) => {
-    const anomalies: Anomaly[] = [];
-    // Additional validation logic here if needed
-    return anomalies;
+function checkNativeFunctions(
+  probes: ProbeResult[],
+  anomalies: LieReport[],
+): void {
+  const NATIVE_FNS: NativeFnDef[] = [
+    { id: "toString:ObjectToString", label: "Object.prototype.toString is native", severity: 9, fn: () => Object.prototype.toString },
+    { id: "toString:FunctionToString", label: "Function.prototype.toString is native", severity: 9, fn: () => Function.prototype.toString },
+    { id: "toString:sendBeacon", label: "navigator.sendBeacon is native", severity: 7, fn: () => navigator.sendBeacon.bind(navigator) },
+    { id: "toString:toDataURL", label: "HTMLCanvasElement.toDataURL is native", severity: 7, fn: () => HTMLCanvasElement.prototype.toDataURL },
+    { id: "toString:getUserMedia", label: "navigator.mediaDevices.getUserMedia is native", severity: 7, fn: () => navigator.mediaDevices?.getUserMedia?.bind(navigator.mediaDevices) ?? null },
+    { id: "toString:createOscillator", label: "AudioContext.prototype.createOscillator is native", severity: 7, fn: () => AudioContext.prototype.createOscillator },
+    { id: "toString:getParameter", label: "WebGLRenderingContext.getParameter is native", severity: 7, fn: () => {
+      const c = document.createElement("canvas");
+      const gl = c.getContext("webgl") as WebGLRenderingContext | null;
+      return gl?.getParameter?.bind(gl) ?? null;
+    }},
+    { id: "toString:createOffer", label: "RTCPeerConnection.prototype.createOffer is native", severity: 7, fn: () => RTCPeerConnection.prototype.createOffer },
+    { id: "toString:fetch", label: "fetch is native", severity: 7, fn: () => fetch },
+    { id: "toString:JSONparse", label: "JSON.parse is native", severity: 7, fn: () => JSON.parse },
+    { id: "toString:JSONstringify", label: "JSON.stringify is native", severity: 7, fn: () => JSON.stringify },
+    { id: "toString:btoa", label: "btoa is native", severity: 7, fn: () => btoa },
+    { id: "toString:postMessage", label: "window.postMessage is native", severity: 5, fn: () => window.postMessage },
+  ];
+
+  for (const def of NATIVE_FNS) {
+    runProbe(probes, anomalies, def.id, def.label, def.severity, () => {
+      const fn = def.fn();
+      if (fn === null) {
+        return { passed: true, value: "unavailable" };
+      }
+      const str = extractNativeString(fn);
+      if (str === null) {
+        return { passed: false, value: null, detail: "Could not extract toString output" };
+      }
+      const isNative = /\{\s*\[native code\]\s*\}/.test(str);
+      return {
+        passed: isNative,
+        value: str.length > 120 ? str.slice(0, 120) + "…" : str,
+        detail: isNative ? undefined : `Native pattern missing: ${str.slice(0, 200)}`,
+      };
+    });
   }
-};
+}
+
+/* ---------------------------------------------------------------- */
+/*  2. Iframe prototype synchronisation check                       */
+/* ---------------------------------------------------------------- */
+async function createHiddenIframe(): Promise<HTMLIFrameElement | null> {
+  try {
+    const ifr = document.createElement("iframe");
+    ifr.style.display = "none";
+    ifr.src = "about:blank";
+    (document.body ?? document.documentElement).appendChild(ifr);
+
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("iframe load timeout")), 5_000);
+      const done = (err?: Error) => {
+        clearTimeout(timeout);
+        if (err) reject(err); else resolve();
+      };
+      ifr.onload = () => done();
+      ifr.onerror = () => done(new Error("iframe load failed"));
+      if (ifr.contentDocument?.readyState === "complete") done();
+    });
+
+    return ifr;
+  } catch {
+    return null;
+  }
+}
+
+async function checkIframePrototypes(
+  probes: ProbeResult[],
+  anomalies: LieReport[],
+): Promise<void> {
+  let ifr: HTMLIFrameElement | null = null;
+
+  try {
+    ifr = await createHiddenIframe();
+  } catch {
+    runProbe(probes, anomalies, "iframe:creation", "Iframe creation for prototype sync", 3, () => ({
+      passed: true,
+      value: "blocked",
+    }));
+    return;
+  }
+
+  if (!ifr || !ifr.contentWindow) {
+    runProbe(probes, anomalies, "iframe:creation", "Iframe creation for prototype sync", 3, () => ({
+      passed: true,
+      value: "blocked",
+    }));
+    return;
+  }
+
+  const iframeWin: Window = ifr.contentWindow;
+
+  const PAIRS: ProtoPairDef[] = [
+    { id: "proto:navigator", label: "Navigator prototype matches iframe", severity: 6, accessor: (w) => Object.getPrototypeOf(w.navigator) },
+    { id: "proto:document", label: "Document prototype matches iframe", severity: 6, accessor: (w) => Object.getPrototypeOf(w.document) },
+    { id: "proto:history", label: "History prototype matches iframe", severity: 5, accessor: (w) => Object.getPrototypeOf(w.history) },
+    { id: "proto:location", label: "Location prototype matches iframe", severity: 5, accessor: (w) => Object.getPrototypeOf(w.location) },
+    { id: "proto:window", label: "Window prototype matches iframe", severity: 5, accessor: (w) => Object.getPrototypeOf(w) },
+  ];
+
+  for (const pair of PAIRS) {
+    runProbe(probes, anomalies, pair.id, pair.label, pair.severity, () => {
+      const mainProto = pair.accessor(window);
+      const ifrProto = pair.accessor(iframeWin);
+
+      if (!mainProto || !ifrProto) {
+        return { passed: true, value: { main: mainProto, iframe: ifrProto } };
+      }
+
+      // Direct reference equality – tampered prototypes won't match
+      const match = mainProto === ifrProto;
+      return {
+        passed: match,
+        value: {
+          main: mainProto.constructor?.name ?? null,
+          iframe: ifrProto.constructor?.name ?? null,
+          match,
+        },
+        detail: match
+          ? undefined
+          : `Prototype reference mismatch: main="${mainProto.constructor?.name}", iframe="${ifrProto.constructor?.name}"`,
+      };
+    });
+  }
+
+  // Cleanup
+  try {
+    ifr.parentNode?.removeChild(ifr);
+  } catch { /* ignore */ }
+}
+
+/* ---------------------------------------------------------------- */
+/*  3. Navigator Proxy / trap detection                             */
+/* ---------------------------------------------------------------- */
+function checkNavigatorProxy(
+  probes: ProbeResult[],
+  anomalies: LieReport[],
+): void {
+  /* 3a. Own-property descriptor of window.navigator */
+  runProbe(probes, anomalies, "trap:navigatorDescriptor", "navigator has a valid property descriptor", 7, () => {
+    const desc = Object.getOwnPropertyDescriptor(window, "navigator");
+    if (!desc) {
+      return { passed: false, value: null, detail: "window.navigator has no property descriptor – likely Proxy" };
+    }
+    // Native navigator is a configurable getter on window
+    const isGetter = typeof desc.get === "function";
+    const getterStr = isGetter ? extractNativeString(desc.get as Function) : null;
+    const nativeGetter = getterStr !== null && /\{\s*\[native code\]\s*\}/.test(getterStr);
+    return {
+      passed: nativeGetter,
+      value: { configurable: desc.configurable, enumerable: desc.enumerable, getterIsNative: nativeGetter },
+      detail: nativeGetter ? undefined : "navigator getter is not native – likely replaced by Proxy",
+    };
+  });
+
+  /* 3b. navigator.plugins reference stability */
+  runProbe(probes, anomalies, "trap:pluginsStability", "navigator.plugins returns stable reference", 6, () => {
+    const a = navigator.plugins;
+    const b = navigator.plugins;
+    const stable = a === b;
+    return {
+      passed: stable,
+      value: stable,
+      detail: stable ? undefined : "navigator.plugins returns different references per access – likely Proxy trap",
+    };
+  });
+
+  /* 3c. navigator.mimeTypes reference stability */
+  runProbe(probes, anomalies, "trap:mimeTypesStability", "navigator.mimeTypes returns stable reference", 6, () => {
+    const a = navigator.mimeTypes;
+    const b = navigator.mimeTypes;
+    const stable = a === b;
+    return {
+      passed: stable,
+      value: stable,
+      detail: stable ? undefined : "navigator.mimeTypes returns different references per access – likely Proxy trap",
+    };
+  });
+
+  /* 3d. navigator.userAgent type & consistency */
+  runProbe(probes, anomalies, "trap:userAgentType", "navigator.userAgent is a non-empty string", 5, () => {
+    const ua = navigator.userAgent;
+    const valid = typeof ua === "string" && ua.length > 0;
+    return {
+      passed: valid,
+      value: valid ? ua.slice(0, 120) : typeof ua,
+      detail: valid ? undefined : `userAgent is not a normal string: ${typeof ua}`,
+    };
+  });
+
+  /* 3e. Check for Proxy on Object.keys(navigator) – native should have ~5 own props */
+  runProbe(probes, anomalies, "trap:navigatorOwnKeys", "navigator has expected own property count", 4, () => {
+    const keys = Object.getOwnPropertyNames(navigator);
+    // Native Navigator exposes very few own properties; most are on the prototype.
+    // A high count or unusual keys suggests a Proxy or injected properties.
+    const suspicious = keys.length > 20;
+    return {
+      passed: !suspicious,
+      value: { count: keys.length, keys: keys.slice(0, 15) },
+      detail: suspicious ? `navigator has ${keys.length} own properties – unusual` : undefined,
+    };
+  });
+
+  /* 3f. Compare prototypes via iframe (already done above, but add a specific check here) */
+  /* 3g. Symbol.toStringTag consistency */
+  runProbe(probes, anomalies, "trap:toStringTag", "navigator[Symbol.toStringTag] is consistent", 4, () => {
+    const tag = Object.prototype.toString.call(navigator);
+    const expected = "[object Navigator]";
+    const match = tag === expected;
+    return {
+      passed: match,
+      value: tag,
+      detail: match ? undefined : `navigator toStringTag is "${tag}" instead of "${expected}"`,
+    };
+  });
+}
+
+/* ---------------------------------------------------------------- */
+/*  4. Additional global integrity checks                           */
+/* ---------------------------------------------------------------- */
+function checkGlobalOverrides(
+  probes: ProbeResult[],
+  anomalies: LieReport[],
+): void {
+  /* 4a. document.all – the IE-era falsy-object quirk */
+  runProbe(probes, anomalies, "override:documentAll", "document.all exhibits correct falsy-object semantics", 6, () => {
+    const exists = "all" in document;
+    if (!exists) {
+      return { passed: true, value: "not present" };
+    }
+    // Route through unknown so typeof reveals the runtime [[IsHTMLDDA]] quirk
+    const rawAll: unknown = document.all;
+    const typeOfAll = typeof rawAll;
+    const inBoolean = !rawAll;
+    const typeIsUndefined = typeOfAll === "undefined";
+    // Spec: typeof document.all === "undefined" and Boolean(document.all) === false
+    const correct = typeIsUndefined && inBoolean === true;
+    return {
+      passed: correct,
+      value: { typeof: typeOfAll, boolean: inBoolean },
+      detail: correct ? undefined : `document.all semantics broken: typeof=${typeOfAll}, Boolean=${inBoolean}`,
+    };
+  });
+
+  /* 4b. Element.prototype.hasAttribute – common hook target */
+  runProbe(probes, anomalies, "override:hasAttribute", "Element.prototype.hasAttribute is native", 7, () => {
+    const str = extractNativeString(Element.prototype.hasAttribute);
+    if (str === null) return { passed: false, value: null, detail: "Could not extract toString" };
+    const native = /\{\s*\[native code\]\s*\}/.test(str);
+    return { passed: native, value: str.slice(0, 120), detail: native ? undefined : "hasAttribute overridden" };
+  });
+
+  /* 4c. Storage.prototype.getItem – common hook target for fingerprinting scripts */
+  runProbe(probes, anomalies, "override:getItem", "Storage.prototype.getItem is native", 7, () => {
+    const str = extractNativeString(Storage.prototype.getItem);
+    if (str === null) return { passed: false, value: null, detail: "Could not extract toString" };
+    const native = /\{\s*\[native code\]\s*\}/.test(str);
+    return { passed: native, value: str.slice(0, 120), detail: native ? undefined : "getItem overridden" };
+  });
+}
+
+/* ---------------------------------------------------------------- */
+/*  Main entry point                                                */
+/* ---------------------------------------------------------------- */
+export async function execute(): Promise<{ probes: ProbeResult[]; anomalies: LieReport[] }> {
+  const probes: ProbeResult[] = [];
+  const anomalies: LieReport[] = [];
+
+  checkNativeFunctions(probes, anomalies);
+  await checkIframePrototypes(probes, anomalies);
+  checkNavigatorProxy(probes, anomalies);
+  checkGlobalOverrides(probes, anomalies);
+
+  return { probes, anomalies };
+}
