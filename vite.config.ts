@@ -1,9 +1,8 @@
-import { defineConfig } from "vite";
+import { defineConfig } from 'vite';
 
 export default defineConfig({
-  base: "./",
+  base: '/SpecterJS/',
   build: {
-    outDir: "dist",
-    sourcemap: true,
+    outDir: 'dist',
   },
 });
