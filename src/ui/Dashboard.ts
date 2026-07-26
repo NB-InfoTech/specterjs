@@ -7,6 +7,7 @@ export class Dashboard {
   private anomalyVisualizer: AnomalyVisualizer;
   private isRunning = false;
   private currentReport: SpecterAuditReport | null = null;
+  private selectedModule: string | null = null;
   
   constructor(container: HTMLElement, engine: any) {
     this.container = container;
@@ -295,7 +296,10 @@ export class Dashboard {
     this.renderTrustScore(report.trustScore);
     this.renderModuleCards(report.results);
     this.renderMetricsGrid(report.summary);
-    this.anomalyVisualizer.setAnomalies(report.trustScore.anomalies);
+    const anomaliesToShow = this.selectedModule && report.trustScore
+      ? report.trustScore.anomalies.filter(a => a.module === this.selectedModule)
+      : report.trustScore.anomalies;
+    this.anomalyVisualizer.setAnomalies(anomaliesToShow);
     this.renderConfigToggles(report.config);
     this.updateTimestamp(report.timestamp);
   }
@@ -344,10 +348,12 @@ export class Dashboard {
         else if (criticalCount > 0) statusClass = 'critical';
         else if (highCount > 0) statusClass = 'warning';
         
+        const isSelected = this.selectedModule === name;
+        
         return `
-          <div class="module-card ${statusClass}">
+          <div class="module-card ${statusClass} ${isSelected ? 'selected' : ''}" data-module="${name}" style="cursor: pointer; ${isSelected ? 'border-color: var(--accent-primary); box-shadow: 0 0 10px rgba(0, 212, 170, 0.3);' : ''}" title="Click to inspect all observations/anomalies for this module">
             <div class="module-card-header">
-              <span class="module-card-name">${moduleLabels[name]}</span>
+              <span class="module-card-name">${moduleLabels[name]} ${isSelected ? ' (Filtered)' : ''}</span>
               <span class="module-card-status">${result.success ? 'OK' : 'FAILED'}</span>
             </div>
             <div class="module-card-meta">
@@ -359,6 +365,20 @@ export class Dashboard {
           </div>
         `;
       }).join('');
+    
+    container.querySelectorAll('.module-card').forEach(card => {
+      card.addEventListener('click', () => {
+        const moduleName = (card as HTMLElement).dataset.module;
+        if (this.selectedModule === moduleName) {
+          this.selectedModule = null;
+        } else {
+          this.selectedModule = moduleName || null;
+        }
+        if (this.currentReport) {
+          this.renderReport(this.currentReport);
+        }
+      });
+    });
   }
   
   private renderMetricsGrid(summary: AuditSummary): void {
@@ -437,6 +457,7 @@ export class Dashboard {
   
   private clearReport(): void {
     this.currentReport = null;
+    this.selectedModule = null;
     this.renderTrustScore({
       overall: 0,
       breakdown: { prototypeIntegrity: 0, executionContext: 0, hardwareEntropy: 0, networkIntegrity: 0, timingIntegrity: 0 },
